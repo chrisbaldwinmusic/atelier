@@ -1,0 +1,6 @@
+.DS_Store
+# JUCE is fetched by build.sh (pinned to a tag), not stored in this repository
+/JUCE/
+/build/
+/shots/
+*.atelier
