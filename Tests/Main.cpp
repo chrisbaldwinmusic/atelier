@@ -5,6 +5,9 @@
 
 #include <CoreFoundation/CoreFoundation.h>
 #include <iostream>
+#include <time.h>
+#include <pthread.h>
+#include <sys/qos.h>
 
 namespace
 {
@@ -1254,17 +1257,36 @@ int main (int argc, char** argv)
     if (want ("CPU"))
     {
         std::cout << "CPU" << std::endl;
-        auto cost = [&] (int mode, int valve)
+        // Twenty seconds of audio, timed as four five-second stretches. The time is this thread's own processor time,
+        // which leaves out the time it spends waiting while other programs run, and the quickest stretch is the
+        // estimate: other work on the machine can only slow a stretch (through shared caches), never speed it up.
+        // Ask for the performance cores, as a host does for its audio thread; left to itself, a busy machine may run
+        // this thread on an efficiency core, where the same work takes markedly longer.
+        pthread_set_qos_class_self_np (QOS_CLASS_USER_INTERACTIVE, 0);
+        auto threadMs = []
+        {
+            timespec t {};
+            clock_gettime (CLOCK_THREAD_CPUTIME_ID, &t);
+            return (double) t.tv_sec * 1000.0 + (double) t.tv_nsec * 1.0e-6;
+        };
+        auto cost = [&] (int mode, int valve, int compModel = 0)
         {
             AtelierProcessor p;
             p.setPlayConfigDetails (2, 2, sr, 256);
             p.prepareToPlay (sr, 256);
             allModulesOn (p);
             setParam (p, "mode", (float) mode); setParam (p, "tubeType", (float) valve);
-            auto b = noise (2, (int) sr * 20, -12.0f, 5);
-            const auto start = juce::Time::getMillisecondCounterHiRes();
-            run (p, b, 256);
-            return (juce::Time::getMillisecondCounterHiRes() - start) / 200.0;
+            if (compModel != 0) setParam (p, "compModel", (float) compModel);
+            const int stretch = (int) sr * 5;
+            double best = 1.0e9;
+            for (int k = 0; k < 4; ++k)
+            {
+                auto b = noise (2, stretch, -12.0f, 5 + k);
+                const double start = threadMs();
+                run (p, b, 256);
+                best = std::min (best, threadMs() - start);
+            }
+            return best / (stretch / sr * 1000.0) * 100.0;
         };
         for (int mode = 0; mode < 3; ++mode)
         {
@@ -1272,20 +1294,12 @@ int main (int argc, char** argv)
             std::cout << "  mode " << mode << ", every module on: " << percent << " % of one core at 48 kHz" << std::endl;
             check (percent < 15.0, "CPU use is reasonable");
         }
-        // the pentode has a third electrode to solve for and the push-pull pair a second valve, so both cost more than the triode
         {
-            AtelierProcessor p;
-            p.setPlayConfigDetails (2, 2, sr, 256);
-            p.prepareToPlay (sr, 256);
-            allModulesOn (p);
-            setParam (p, "mode", 1.0f); setParam (p, "compModel", 3.0f);
-            auto b = noise (2, (int) sr * 20, -12.0f, 5);
-            const auto start = juce::Time::getMillisecondCounterHiRes();
-            run (p, b, 256);
-            const double percent = (juce::Time::getMillisecondCounterHiRes() - start) / 200.0;
+            const double percent = cost (1, 0, 3);
             std::cout << "  mode 1 with the Vari-Mu compressor: " << percent << " % of one core at 48 kHz" << std::endl;
             check (percent < 18.0, "CPU use is reasonable with the Vari-Mu compressor");
         }
+        // the pentode has a third electrode to solve for and the push-pull pair a second valve, so both cost more than the triode
         static const char* valves[] = { "triode", "pentode", "push-pull" };
         for (int valve = 1; valve < 3; ++valve)
         {
