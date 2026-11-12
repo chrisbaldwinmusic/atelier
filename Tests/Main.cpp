@@ -545,7 +545,7 @@ int main (int argc, char** argv)
             { "ironOn", 1, 0 }, { "imgOn", 1, 0 }, { "limOn", 1, 0 }, { "bypass", 0, 1 }, { "phase", 0, 1 }, { "eqPre", 1, 0 },
             { "tubeType", 0, 1 }, { "tubeType", 0, 2 }, { "compModel", 0, 1 }, { "compModel", 0, 3 }, { "tapeSpeed", 1, 0 },
             { "ironType", 0, 2 }, { "eqStyle", 0, 1 }, { "eqMS", 0, 2 }, { "hpf", 150, 20 }, { "lpf", 3000, 22000 },
-            { "mode", 0, 2 }, { "mode", 2, 1 }, { "lowLat", 0, 1 }, { "match", 0, 1 } };
+            { "mode", 0, 2 }, { "mode", 2, 1 }, { "lowLat", 0, 1 }, { "match", 0, 1 }, { "limClip", 0, 100 } };
 
         float worst = 0.0f, steadyWorst = 0.0f; juce::String worstName;
         for (int baseMode : { 0, 2 })
@@ -653,6 +653,204 @@ int main (int argc, char** argv)
         auto ll = noise (2, len, -12.0f, 34);
         run (q, ll, 512);
         check (rmsDb (ll, 24000) < -95.0f, "delta is silent in low-latency mode too");
+    }
+
+    if (want ("Mastering finishers: clipper, dither, dense material"))
+    {
+        std::cout << "Mastering finishers: clipper, dither, dense material" << std::endl;
+        auto master = [&] (AtelierProcessor& p)
+        {
+            p.setPlayConfigDetails (2, 2, sr, 512);
+            p.prepareToPlay (sr, 512);
+            setParam (p, "mode", 2.0f); setParam (p, "tubeOn", 0.0f);
+            setParam (p, "limOn", 1.0f); setParam (p, "limCeil", -1.0f);
+        };
+
+        // drum-like material: short loud hits over a quiet bed, pushed 9 dB into the limiter
+        auto drums = [&]
+        {
+            auto b = noise (2, len, -40.0f, 41);
+            for (int i = 0; i < len; ++i)
+            {
+                const float t = (float) (i % 12000) / (float) sr;
+                const float hit = 0.9f * std::exp (-t * 60.0f) * std::sin (2.0f * juce::MathConstants<float>::pi * (60.0f + 140.0f * std::exp (-t * 80.0f)) * t);
+                b.addSample (0, i, hit); b.addSample (1, i, hit);
+            }
+            return b;
+        };
+        float gr[2] {}, loud[2] {}, tp[2] {};
+        for (int c = 0; c < 2; ++c)
+        {
+            AtelierProcessor p;
+            master (p);
+            setParam (p, "limDrive", 9.0f); setParam (p, "limClip", c == 0 ? 0.0f : 100.0f);
+            auto b = drums();
+            run (p, b, 512);
+            p.meters.grLim.store (0.0f);
+            auto again = drums();
+            run (p, again, 512);
+            gr[c] = p.meters.grLim.load(); loud[c] = p.meters.lufsI.load(); tp[c] = referenceTruePeakDb (again, 4800);
+        }
+        std::cout << "  9 dB of drive on drum hits: limiter alone removes " << gr[0] << " dB (" << loud[0] << " LUFS, " << tp[0]
+                  << " dBTP); with Clip at 100 % it removes " << gr[1] << " dB (" << loud[1] << " LUFS, " << tp[1] << " dBTP)" << std::endl;
+        check (gr[0] > 5.0f && gr[1] < 1.5f, "the clipper takes the peaks so the limiter barely works");
+        check (tp[0] <= -0.8f && tp[1] <= -0.8f, "true peak stays at the ceiling with and without the clipper");
+        check (loud[1] > loud[0] + 0.3f, "clipping the hits ends up louder than limiting them");
+
+        {
+            // clipper aliasing: 15 kHz driven hard into it; anything at 3 kHz has folded back
+            AtelierProcessor p;
+            master (p);
+            setParam (p, "limDrive", 12.0f); setParam (p, "limClip", 100.0f);
+            auto hi = sine (2, len, sr, 15000.0, -6.0f);
+            run (p, hi, 512);
+            const float alias = toneDb (hi, 24000, sr, 3000.0) - toneDb (hi, 24000, sr, 15000.0);
+            std::cout << "  15 kHz clipped by about 5 dB: alias at 3 kHz " << alias << " dBc" << std::endl;
+            check (alias < -70.0f, "clipper aliasing is below -70 dBc");
+        }
+
+        {
+            // the case that used to overshoot: full-band noise driven hard
+            AtelierProcessor p;
+            master (p);
+            setParam (p, "limDrive", 18.0f);
+            auto b = noise (2, len, -3.0f, 7);
+            run (p, b, 512);
+            const float truePk = referenceTruePeakDb (b, 24000);
+            // White noise right up to the top of the band is the hardest possible case: its inter-sample peaks come
+            // from content no converter passes. A standard meter must read under the ceiling; the ideal-reconstruction
+            // reference (stricter than any meter) may sit a little above it.
+            const float metered = juce::Decibels::gainToDecibels (p.meters.truePeak.load());
+            std::cout << "  full-band noise, 18 dB of drive: meter reads " << metered << " dBTP against a -1.0 ceiling; ideal reconstruction "
+                      << truePk << " dBTP" << std::endl;
+            check (metered <= -1.0f + 0.05f, "dense material reads at or under the ceiling on a standard true-peak meter");
+            check (truePk <= 0.0f, "dense material stays within 1 dB of the ceiling even by ideal reconstruction");
+        }
+
+        for (int mode = 1; mode <= 3; ++mode)
+        {
+            AtelierProcessor p;
+            master (p);
+            setParam (p, "limOn", 0.0f); setParam (p, "dither", (float) mode);
+            juce::AudioBuffer<float> b (2, len);
+            b.clear();
+            run (p, b, 512);
+            const double lsb = mode == 1 ? 1.0 / 8388608.0 : 1.0 / 32768.0;
+            bool onGrid = true;
+            for (int i = 0; i < len; ++i)
+            {
+                const double v = (double) b.getSample (0, i) / lsb;
+                if (std::abs (v - std::round (v)) > 1.0e-3) onGrid = false;
+            }
+            // noise in the band the ear cares about most, 0.5 to 4 kHz
+            double band = 0.0; int bins = 0;
+            for (double f = 500.0; f <= 4000.0; f += 250.0) { band += std::pow (10.0, toneDb (b, 24000, sr, f) / 10.0); ++bins; }
+            const float bandDb = (float) (10.0 * std::log10 (band / bins));
+            double sq = 0.0;
+            for (int i = 24000; i < len; ++i) sq += (double) b.getSample (0, i) * b.getSample (0, i);
+            const float noiseDb = (float) (10.0 * std::log10 (std::max (1.0e-30, sq / (len - 24000))));
+            static float flatBand = 0.0f;
+            if (mode == 2) flatBand = bandDb;
+            std::cout << "  dither mode " << mode << " on silence: noise " << noiseDb << " dBFS, 0.5 to 4 kHz content " << bandDb << " dB" << std::endl;
+            const float expected = mode == 1 ? -144.5f : -96.3f;
+            if (mode < 3) check (onGrid && std::abs (noiseDb - expected) < 1.5f, "dither mode " + juce::String (mode) + " rounds to its bit depth with the right noise level");
+            else          check (onGrid && bandDb < flatBand - 6.0f, "shaped dither moves the noise out of the midrange");
+        }
+
+        {
+            AtelierProcessor p;
+            master (p);
+            setParam (p, "dither", 2.0f); setParam (p, "bypass", 1.0f);
+            const auto in = noise (2, len, -12.0f);
+            auto out = in;
+            run (p, out, 512);
+            const int lat = p.getLatencySamples();
+            float maxErr = 0.0f;
+            for (int i = 2000; i < len - lat; ++i) maxErr = std::max (maxErr, std::abs (out.getSample (0, i + lat) - in.getSample (0, i)));
+            check (maxErr < 1.0e-5f, "bypass stays bit-transparent with dither selected");
+        }
+    }
+
+    if (want ("Valve circuit against ngspice"))
+    {
+        std::cout << "Valve circuit against ngspice" << std::endl;
+        juce::File ngspice (juce::SystemStats::getEnvironmentVariable ("NGSPICE", {}));
+        const auto ngHome = juce::File::getSpecialLocation (juce::File::userHomeDirectory).getChildFile ("Library/Caches/ngspice-44.2");
+        if (! ngspice.existsAsFile()) ngspice = ngHome.getChildFile ("bin/ngspice");
+
+        if (! ngspice.existsAsFile())
+        {
+            std::cout << "  SKIPPED: ngspice not found (set NGSPICE=/path/to/ngspice)" << std::endl;
+        }
+        else
+        {
+            const double osRate = 192000.0;
+            const int total = (int) (0.3 * osRate), from = (int) (0.1 * osRate);
+            float worst = -200.0f;
+
+            for (double amp : { 0.05, 0.5, 2.0, 8.0 })
+            {
+                const auto deck = outDir.getChildFile ("triode.cir"), data = outDir.getChildFile ("triode.txt");
+                data.deleteFile();
+                juce::String d;
+                d << "Common-cathode 12AX7 stage\n"
+                  << ".subckt TRIODE P G K\n"
+                  << "Bp P K I=V(E1)>0 ? 2*pwr(V(E1),1.4)/1060 : 0\n"
+                  << "Be E1 0 V=V(P,K)/600*ln(1+exp(600*(1/100+V(G,K)/sqrt(300+V(P,K)*V(P,K)))))\n"
+                  << "Bg G K I=V(G,K)>0 ? pwr(V(G,K),1.5)/1300 : 0\n"
+                  << ".ends\n"
+                  << "Vb bp 0 250\nVin in 0 SIN(0 " << amp << " 220)\n"
+                  << "Cin in g1 47n\nRgl g1 0 1Meg\nRgs g1 g 33k\nX1 p g k TRIODE\n"
+                  << "Rp bp p 100k\nRk k 0 1.5k\nCk k 0 22u\nCout p out 100n\nRl out 0 1Meg\n"
+                  << ".options reltol=1e-5\n"
+                  << ".control\ntran 5.2083333333u 0.3 0 2.6u\nlinearize v(out)\nwrdata triode.txt v(out)\n.endc\n.end\n";
+                deck.replaceWithText (d);
+
+                juce::ChildProcess proc;
+                // ngspice writes its data file relative to where it is run, and takes file names literally
+                juce::StringArray cmd { "/bin/sh", "-c", "cd " + outDir.getFullPathName().quoted() + " && SPICE_LIB_DIR="
+                                                             + ngspice.getParentDirectory().getSiblingFile ("share/ngspice").getFullPathName().quoted()
+                                                             + " " + ngspice.getFullPathName().quoted() + " -b triode.cir > /dev/null 2>&1" };
+                const bool ran = proc.start (cmd) && proc.waitForProcessToFinish (120000);
+                juce::StringArray lines;
+                lines.addLines (data.loadFileAsString());
+                std::vector<double> ref;
+                for (const auto& line : lines)
+                {
+                    const auto parts = juce::StringArray::fromTokens (line.trim(), " \t", "");
+                    if (parts.size() >= 2) ref.push_back (parts[parts.size() - 1].getDoubleValue());
+                }
+                if (! ran || (int) ref.size() < total - 2) { check (false, "ngspice produced a reference for " + juce::String (amp) + " V"); continue; }
+
+                atelier::TubeCircuit t;
+                t.prepare (osRate);
+                double err = 0.0, sig = 0.0;
+                for (int i = 0; i < total - 2; ++i)
+                {
+                    const double y = t.processVolts (0, amp * std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * i / osRate));
+                    if (i >= from) { err += (y - ref[(size_t) i]) * (y - ref[(size_t) i]); sig += ref[(size_t) i] * ref[(size_t) i]; }
+                }
+                const float diff = (float) (10.0 * std::log10 (std::max (1.0e-30, err / sig)));
+                worst = std::max (worst, diff);
+                std::cout << "  " << amp << " V at the grid: difference from ngspice " << diff << " dB" << std::endl;
+            }
+            check (worst < -40.0f, "valve stage matches the ngspice simulation of the same circuit to better than -40 dB");
+        }
+
+        // behaviour a static curve cannot have: after a loud burst the bias has shifted and takes time to come back
+        atelier::TubeCircuit t;
+        t.prepare (192000.0);
+        auto level = [&] (double amp, int n)
+        {
+            double sq = 0.0;
+            for (int i = 0; i < n; ++i) { const double y = t.processVolts (0, amp * std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * i / 192000.0)); sq += y * y; }
+            return 10.0 * std::log10 (sq / n);
+        };
+        const double before = level (0.05, 19200);
+        level (8.0, 96000);
+        const double justAfter = level (0.05, 1920), later = (level (0.05, 192000), level (0.05, 19200));
+        std::cout << "  quiet tone: " << before << " dB before a loud burst, " << justAfter << " dB in the 10 ms after it, " << later << " dB a second later" << std::endl;
+        check (std::abs (justAfter - before) > 0.5 && std::abs (later - before) < 0.2, "the valve's bias shifts after a loud burst and then recovers");
     }
 
     if (want ("Starting points"))

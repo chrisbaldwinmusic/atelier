@@ -62,7 +62,7 @@ public:
     {
         std::atomic<float> inPeak[2] { { 0.0f }, { 0.0f } }, outPeak[2] { { 0.0f }, { 0.0f } };
         std::atomic<float> vuRms { 0.0f }, heat { 0.0f };
-        std::atomic<float> grComp { 0.0f }, grGate { 0.0f }, grDeEss { 0.0f }, grLim { 0.0f };
+        std::atomic<float> grComp { 0.0f }, grGate { 0.0f }, grDeEss { 0.0f }, grLim { 0.0f }, grClip { 0.0f };
         std::atomic<float> lufsS { -100.0f }, lufsM { -100.0f }, lufsI { -100.0f }, lra { 0.0f };
         std::atomic<float> truePeak { 0.0f };       // largest inter-sample peak since the last reset (linear)
         std::atomic<float> correlation { 1.0f };    // -1 (out of phase) .. +1 (mono)
@@ -79,7 +79,7 @@ private:
         sHpf, sLpf, sGateThr, sGateRange, sGateRel, sTubeDrive, sTubeBias, sDsFreq, sDsThr,
         sLfGain, sLfFreq, sLmGain, sLmFreq, sLmQ, sHmGain, sHmFreq, sHmQ, sHfGain, sHfFreq, sAirGain, sAirFreq,
         sCompThr, sCompRatio, sCompAtt, sCompRel, sCompMakeup, sCompMix, sCompSc,
-        sTapeDrive, sTapeBias, sTapeBump, sIronDrive, sWidth, sMonoBass, sLimDrive, sLimCeil, sLimRel,
+        sTapeDrive, sTapeBias, sTapeBump, sIronDrive, sWidth, sMonoBass, sLimDrive, sLimCeil, sLimRel, sLimClip,
         numSmoothed
     };
 
@@ -91,13 +91,13 @@ private:
 
     std::atomic<float>* smSrc[numSmoothed] {};
     float sm[numSmoothed] {};
-    float smCoef = 0.1f;
+    float smCoef = 0.1f, smCoefSlow = 0.03f;
     bool smPrimed = false;
 
     std::atomic<float> *pMode {}, *pBypass {}, *pInGain {}, *pPhase {}, *pOutGain {};
     std::atomic<float> *pGateOn {}, *pTubeOn {}, *pTubeType {}, *pDsOn {}, *pEqOn {}, *pEqStyle {}, *pEqMS {}, *pEqPre {};
     std::atomic<float> *pCompOn {}, *pCompModel {}, *pCompAuto {}, *pTapeOn {}, *pTapeSpeed {}, *pIronOn {}, *pIronType {};
-    std::atomic<float> *pImgOn {}, *pLimOn {}, *pLowLat {}, *pGateExt {}, *pCompExt {}, *pMatch {};
+    std::atomic<float> *pImgOn {}, *pLimOn {}, *pLowLat {}, *pGateExt {}, *pCompExt {}, *pMatch {}, *pDither {};
     juce::AudioParameterBool* bypassParam = nullptr;
 
     double sr = 48000.0;
@@ -137,7 +137,8 @@ private:
     std::vector<float> dlyL, dlyR;
 
     // click-free switching
-    atelier::Fade hpfFade, lpfFade, gateFade, tubeFade, dsFade, eqFade, compFade, tapeFade, ironFade, colourFade, imgFade;
+    atelier::Fade hpfFade, lpfFade, gateFade, tubeFade, dsFade, eqFade, compFade, tapeFade, ironFade, clipFade, colourFade, imgFade;
+    atelier::Dither dither;
     bool eqPreActive = true, orderPrimed = false;
     float headroomSm = 1.0f, kneeSm = 0.0f;
 

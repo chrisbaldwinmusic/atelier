@@ -198,23 +198,36 @@ struct Fade
 };
 
 //==============================================================================
-/** Inter-sample ("true") peak estimator: 4x windowed-sinc interpolation, 12 taps per phase.
-    Converters reconstruct peaks that fall between samples; this finds them. */
-struct TruePeak
+/** Inter-sample ("true") peak estimator: 4x windowed-sinc interpolation.
+    Converters reconstruct peaks that fall between samples; this finds them.
+    12 taps per phase matches the meter described in ITU-R BS.1770; more taps follow the
+    reconstructed waveform more closely on dense, full-band material. */
+template <int Taps>
+struct TruePeakT
 {
-    static constexpr int taps = 12, phases = 4, delay = 6;     // delay in samples at the base rate
+    static constexpr int taps = Taps, phases = 4, delay = Taps / 2;     // delay in samples at the base rate
 
-    TruePeak()
+    TruePeakT()
     {
-        // h[n] = sinc((n - 24) / 4) * Blackman-Harris window, n = 0..48; phase 0 is the (delayed) sample itself
+        // h[n] = sinc((n - centre) / 4) * Kaiser window; phase 0 is the (delayed) sample itself.
+        // Kaiser (about 50 dB) keeps the response flat much closer to the top of the band than a
+        // wider window would, which is where the largest inter-sample peaks come from.
+        auto bessel0 = [] (double x)
+        {
+            double sum = 1.0, term = 1.0;
+            for (int k = 1; k < 40; ++k) { term *= (x / (2.0 * k)) * (x / (2.0 * k)); sum += term; }
+            return sum;
+        };
+        constexpr double beta = 4.55;
+        const int length = phases * taps, centre = length / 2;
         for (int p = 0; p < phases; ++p)
             for (int k = 0; k < taps; ++k)
             {
                 const int n = p + phases * k;
-                const double x = (double) (n - 24) / 4.0;
+                const double x = (double) (n - centre) / (double) phases;
                 const double sinc = std::abs (x) < 1.0e-9 ? 1.0 : std::sin (kPi * x) / (kPi * x);
-                const double t = 2.0 * kPi * (double) n / 48.0;
-                const double win = 0.35875 - 0.48829 * std::cos (t) + 0.14128 * std::cos (2.0 * t) - 0.01168 * std::cos (3.0 * t);
+                const double t = (double) (n - centre) / (double) centre;      // -1 .. 1
+                const double win = bessel0 (beta * std::sqrt (std::max (0.0, 1.0 - t * t))) / bessel0 (beta);
                 coef[p][k] = (float) (sinc * win);
             }
         reset();
@@ -247,6 +260,48 @@ private:
     float coef[phases][taps] {};
     std::array<float, taps> hist[2] {};
     int pos = 0;
+};
+
+using TruePeak = TruePeakT<12>;
+
+//==============================================================================
+/** Word-length reduction for the final master: TPDF dither, with optional noise shaping
+    that moves the dither noise up towards frequencies where the ear is least sensitive. */
+struct Dither
+{
+    void reset() noexcept   { for (int ch = 0; ch < 2; ++ch) e1[ch] = e2[ch] = 0.0; }
+
+    /** @param bits 16 or 24. */
+    void set (int bits, bool shaped) noexcept
+    {
+        const double q = std::ldexp (1.0, bits - 1);
+        if (q != scale || shaped != shape) reset();
+        scale = q; shape = shaped;
+    }
+
+    inline float process (int ch, float x) noexcept
+    {
+        double w = (double) x * scale;
+        if (shape) w -= h1 * e1[ch] + h2 * e2[ch];          // noise transfer: 1 - h1 z^-1 - h2 z^-2
+
+        const double d = uniform() - uniform();             // triangular, +/- 1 LSB
+        const double y = std::floor (w + d + 0.5);
+        e2[ch] = e1[ch];
+        e1[ch] = y - w;
+        return (float) (y / scale);
+    }
+
+private:
+    inline double uniform() noexcept
+    {
+        seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5;
+        return (double) seed * (1.0 / 4294967296.0);
+    }
+
+    static constexpr double h1 = 1.2, h2 = -0.4;
+    double scale = 32768.0, e1[2] {}, e2[2] {};
+    bool shape = false;
+    std::uint32_t seed = 0x9E3779B9u;
 };
 
 //==============================================================================

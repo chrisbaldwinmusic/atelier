@@ -125,6 +125,8 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
     addF ("limDrive", "Limiter Drive", 0.0f, 18.0f, 0.0f, format::db);
     addF ("limCeil", "Limiter Ceiling", -6.0f, 0.0f, -1.0f, format::db);
     addF ("limRel", "Limiter Release", 10.0f, 1000.0f, 120.0f, format::ms, 150.0f);
+    addF ("limClip", "Limiter Clip", 0.0f, 100.0f, 0.0f, format::pct);
+    addC ("dither", "Dither", { "No dither", "24 bit", "16 bit", "16 shaped" }, 0);
 
     // Output
     addF ("outGain", "Output Trim", -24.0f, 24.0f, 0.0f, format::db);

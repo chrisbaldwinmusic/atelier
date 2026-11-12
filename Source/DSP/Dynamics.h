@@ -299,6 +299,7 @@ struct Compressor
 //==============================================================================
 /** Look-ahead brickwall limiter with true-peak detection: the gain computer looks at
     the 4x-interpolated waveform, so peaks that fall between samples are caught too.
+    A second detector on the output trims the target when dense material still overshoots.
     Gain path: required gain -> sliding minimum -> release -> moving average,
     which guarantees the gain has fully arrived when the peak leaves the delay. */
 struct Limiter
@@ -308,7 +309,8 @@ struct Limiter
         sr = sampleRate;
         L = std::max (4, (int) std::round (0.0015 * sr));
         cap = L + 1;
-        delayLen = L - 1 + TruePeak::delay;     // look-ahead plus the interpolator's own delay
+        delayLen = L - 1 + Detector::delay;     // look-ahead plus the interpolator's own delay
+        guardRel = msToCoef (2000.0f, sr);
         for (auto& d : delay) d.assign ((size_t) delayLen, 0.0f);
         avg.assign ((size_t) L, 1.0f);
         dqV.assign ((size_t) cap, 1.0f);
@@ -320,7 +322,7 @@ struct Limiter
     {
         for (auto& d : delay) std::fill (d.begin(), d.end(), 0.0f);
         std::fill (avg.begin(), avg.end(), 1.0f);
-        truePeak.reset();
+        truePeak.reset(); guard.reset(); margin = 1.0f;
         sum = (double) L; ai = 0; dpos = 0;
         head = tail = count = 0; counter = 0; relEnv = 1.0f;
         primed = false; isActive = false; clampHold = 0;
@@ -371,7 +373,8 @@ struct Limiter
             driveSm += driveCoef * (drive - driveSm);
             const float xl = l[i] * driveSm, xr = r[i] * driveSm;
             const float pk = truePeak.process (xl, xr);
-            const float g  = pk > ceiling ? ceiling / pk : 1.0f;
+            const float aim = ceiling * margin;
+            const float g  = pk > aim ? aim / pk : 1.0f;
 
             // sliding minimum over the last L samples (monotonic deque)
             while (count > 0 && dqV[(size_t) ((tail - 1 + cap) % cap)] >= g) { tail = (tail - 1 + cap) % cap; --count; }
@@ -399,6 +402,14 @@ struct Limiter
             const float clampAt = clampHold > 0 ? (--clampHold, 1.0e9f) : ceiling;
             l[i] = std::clamp (dl * a, -clampAt, clampAt);
             r[i] = std::clamp (dr * a, -clampAt, clampAt);
+
+            // Overshoot guard: check the true peak of what actually came out. On very dense material the
+            // changing gain itself can create small overs; when one is seen, aim a little lower for a while.
+            if (isActive)
+            {
+                const float op = guard.process (l[i], r[i]);
+                margin = op > ceiling ? std::max (0.5f, margin * ceiling / op) : margin + guardRel * (1.0f - margin);
+            }
             minGain = std::min (minGain, a);
         }
         return -gainToDb (minGain);
@@ -406,7 +417,10 @@ struct Limiter
 
     double sr = 48000.0, sum = 0.0;
     int L = 72, cap = 73, delayLen = 77, ai = 0, dpos = 0, head = 0, tail = 0, count = 0;
-    TruePeak truePeak;
+    using Detector = TruePeakT<32>;     // stricter than the meter, so the meter never reads over
+    Detector truePeak;
+    Detector guard;
+    float margin = 1.0f, guardRel = 0.0001f;
     std::int64_t counter = 0;
     float drive = 1.0f, driveSm = 1.0f, driveCoef = 0.01f, ceiling = 1.0f, relCoef = 0.001f, relEnv = 1.0f;
     int clampHold = 0;

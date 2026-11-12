@@ -56,7 +56,7 @@ AtelierProcessor::AtelierProcessor()
         "hpf", "lpf", "gateThr", "gateRange", "gateRel", "tubeDrive", "tubeBias", "dsFreq", "dsThr",
         "lfGain", "lfFreq", "lmGain", "lmFreq", "lmQ", "hmGain", "hmFreq", "hmQ", "hfGain", "hfFreq", "airGain", "airFreq",
         "compThr", "compRatio", "compAtt", "compRel", "compMakeup", "compMix", "compSc",
-        "tapeDrive", "tapeBias", "tapeBump", "ironDrive", "width", "monoBass", "limDrive", "limCeil", "limRel"
+        "tapeDrive", "tapeBias", "tapeBump", "ironDrive", "width", "monoBass", "limDrive", "limCeil", "limRel", "limClip"
     };
 
     for (int i = 0; i < numSmoothed; ++i)
@@ -72,7 +72,7 @@ AtelierProcessor::AtelierProcessor()
     pEqPre = p ("eqPre");       pCompOn = p ("compOn");     pCompModel = p ("compModel"); pCompAuto = p ("compAuto");
     pTapeOn = p ("tapeOn");     pTapeSpeed = p ("tapeSpeed"); pIronOn = p ("ironOn");   pIronType = p ("ironType");
     pImgOn = p ("imgOn");       pLimOn = p ("limOn");       pLowLat = p ("lowLat");
-    pGateExt = p ("gateExt");   pCompExt = p ("compExt");   pMatch = p ("match");
+    pGateExt = p ("gateExt");   pCompExt = p ("compExt");   pMatch = p ("match");       pDither = p ("dither");
 
     bypassParam = dynamic_cast<juce::AudioParameterBool*> (apvts.getParameter ("bypass"));
     apvts.addParameterListener ("lowLat", this);
@@ -167,6 +167,8 @@ void AtelierProcessor::prepareToPlay (double sampleRate, int)
         f->prepare (sr);
     tapeFade.prepare (sr * (double) (1 << colourOsOrder));      // these two blend inside the oversampled domain
     ironFade.prepare (sr * (double) (1 << colourOsOrder));
+    clipFade.prepare (sr * (double) (1 << colourOsOrder));
+    dither.reset();
     orderPrimed = false;
 
     inGain.reset (sr, 0.02);
@@ -175,6 +177,7 @@ void AtelierProcessor::prepareToPlay (double sampleRate, int)
     outGain.setCurrentAndTargetValue (dbToGain (pOutGain->load()));
 
     smCoef = 1.0f - (float) std::exp (-(double) chunk / (0.008 * sr));
+    smCoefSlow = 1.0f - (float) std::exp (-(double) chunk / (0.03 * sr));
     smPrimed = false;
 
     for (auto* v : { &monoR, &tmpL, &tmpR, &dryL, &dryR, &keyL, &keyR, &dlyL, &dlyR })
@@ -269,7 +272,9 @@ void AtelierProcessor::processChunk (float* l, float* r, const float* kl, const 
     for (int i = 0; i < numSmoothed; ++i)
     {
         const float target = smSrc[i]->load (std::memory_order_relaxed);
-        sm[i] = smPrimed ? sm[i] + smCoef * (target - sm[i]) : target;
+        // filter cut-offs glide more slowly: a fast sweep of a filter's corner is audible as a thump
+        const float coef = (i == sHpf || i == sLpf) ? smCoefSlow : smCoef;
+        sm[i] = smPrimed ? sm[i] + coef * (target - sm[i]) : target;
     }
     headroomSm = smPrimed ? headroomSm + smCoef * (headroomForMode[mode] - headroomSm) : headroomForMode[mode];
     kneeSm     = smPrimed ? kneeSm + smCoef * (kneeForMode[mode] - kneeSm) : kneeForMode[mode];
@@ -467,14 +472,19 @@ void AtelierProcessor::processChunk (float* l, float* r, const float* kl, const 
     if (eqPreActive) { runEq(); runComp(); }
     else             { runComp(); runEq(); }
 
-    // ---- tape + iron (shared oversampler) ---------------------------------------
+    // ---- tape + iron + clipper (shared oversampler) ------------------------------
+    const bool limOn = ! isMix && on (pLimOn);
     colourDelay[path].process (l, r, tmpL.data(), tmpR.data(), n);
     {
         bool coldTape = false, coldIron = false, coldOs = false;
         const bool runTape = tapeFade.begin (on (pTapeOn), (int) pTapeSpeed->load(), coldTape);
         const bool runIron = ironFade.begin (on (pIronOn), (int) pIronType->load(), coldIron);
 
-        if (colourFade.begin (runTape || runIron, 0, coldOs))
+        // The clipper belongs to the limiter but runs here, inside the oversampler, so it doesn't alias.
+        bool coldClip = false;
+        const bool runClip = clipFade.begin (limOn && sm[sLimClip] > 0.05f, 0, coldClip);
+
+        if (colourFade.begin (runTape || runIron || runClip, 0, coldOs))
         {
             auto& os = *colourOS[path];
             if (coldOs)
@@ -517,6 +527,14 @@ void AtelierProcessor::processChunk (float* l, float* r, const float* kl, const 
                     iron.process (ul, ur, un);
                 });
 
+            if (runClip)
+                inner (clipFade, coldClip, [] {}, [&]
+                {
+                    // the limiter's drive comes later, so the ceiling is expressed at this point in the chain
+                    const float threshold = dbToGain (sm[sLimCeil] - sm[sLimDrive]);
+                    pushPeak (meters.grClip, SoftClip::process (ul, ur, un, threshold, sm[sLimClip] * 0.01f));
+                });
+
             os.processSamplesDown (block);
             colourFade.mix (l, r, tmpL.data(), tmpR.data(), n);
         }
@@ -537,7 +555,6 @@ void AtelierProcessor::processChunk (float* l, float* r, const float* kl, const 
            });
 
     // the limiter always runs (as a plain delay when off) and smooths its own switching
-    const bool limOn = ! isMix && on (pLimOn);
     limiter.set (limOn, sm[sLimDrive], sm[sLimCeil], sm[sLimRel]);
     const float limGr = limiter.process (l, r, n);
     if (limOn) pushPeak (meters.grLim, limGr);
@@ -549,6 +566,10 @@ void AtelierProcessor::processChunk (float* l, float* r, const float* kl, const 
     // so the comparison is about tone and dynamics, not volume. The processed signal is never touched.
     matchGain.setTargetValue (bypassed && pMatch->load() > 0.5f ? dbToGain (meters.matchDb.load (std::memory_order_relaxed)) : 1.0f);
     deltaMix.setTargetValue (deltaListen.load (std::memory_order_relaxed) ? 1.0f : 0.0f);
+
+    // Dither is the very last thing that happens, and only when the strip is on a bus or master.
+    const int ditherMode = bypassed || isMix || deltaListen.load (std::memory_order_relaxed) ? 0 : juce::jlimit (0, 3, (int) pDither->load());
+    if (ditherMode > 0) dither.set (ditherMode == 1 ? 24 : 16, ditherMode == 3);
 
     float pkL = 0.0f, pkR = 0.0f, tp = 0.0f;
     for (int i = 0; i < n; ++i)
@@ -564,6 +585,7 @@ void AtelierProcessor::processChunk (float* l, float* r, const float* kl, const 
         const float mg = matchGain.getNextValue(), dm = deltaMix.getNextValue();
         l[i] = l[i] * mg - dm * dlyL[(size_t) i];
         r[i] = r[i] * mg - dm * dlyR[(size_t) i];
+        if (ditherMode > 0) { l[i] = dither.process (0, l[i]); r[i] = dither.process (1, r[i]); }
         pkL = std::max (pkL, std::abs (l[i]));
         pkR = std::max (pkR, std::abs (r[i]));
         tp  = std::max (tp, outTruePeak.process (l[i], r[i]));

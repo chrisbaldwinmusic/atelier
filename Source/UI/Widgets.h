@@ -381,7 +381,7 @@ public:
 
     void addCell (juce::Component* c)                   { cells.add (c); if (c != nullptr) addAndMakeVisible (c); }
     void addHeader (juce::Component* c, int width)      { headers.add ({ c, width }); addAndMakeVisible (c); }
-    void enableGrMeter (float rangeDb)                  { grRange = rangeDb; }
+    void enableGrMeter (float rangeDb, bool showValue = false)  { grRange = rangeDb; showGrValue = showValue; }
     void setGr (float db)                               { if (std::abs (db - gr) > 0.02f) { gr = db; repaint (grBounds().expanded (2)); } }
 
     static constexpr int titleH = 28, pad = 8, grH = 14;
@@ -440,6 +440,16 @@ public:
                 g.setColour (i < litSegs ? accent.brighter (0.2f) : col::ledOff);
                 g.fillRect (bar.getX() + sw * (float) i + 1.0f, bar.getY() + 3.0f, sw - 2.0f, bar.getHeight() - 6.0f);
             }
+
+            if (showGrValue && gr > 0.05f)      // the figure, over the unlit end of the strip
+            {
+                auto label = bar.removeFromRight (34.0f);
+                g.setColour (col::well.withAlpha (0.85f));
+                g.fillRect (label);
+                g.setColour (col::cream);
+                g.setFont (font (9.0f, true));
+                g.drawText ("-" + juce::String (gr, 1), label, juce::Justification::centred, false);
+            }
         }
     }
 
@@ -457,6 +467,7 @@ private:
     std::unique_ptr<LedButton> power;
     juce::Array<juce::Component*> cells;
     juce::Array<Header> headers;
+    bool showGrValue = false;
     float grRange = 0.0f, gr = 0.0f;
 };
 

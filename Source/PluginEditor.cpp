@@ -136,10 +136,11 @@ AtelierEditor::AtelierEditor (AtelierProcessor& p)
     knob (limiter, "limDrive", "DRIVE");
     knob (limiter, "limCeil", "CEILING");
     knob (limiter, "limRel", "RELEASE");
-    limRead = readout (limiter, "REDUCTION");
-    limiter.enableGrMeter (12.0f);
+    knob (limiter, "limClip", "CLIP");
+    limiter.enableGrMeter (12.0f, true);
 
     // ---- OUTPUT ----
+    ditherBox = headerCombo (output, "dither", 84);
     knob (output, "outGain", "TRIM");
     {
         auto* cell = new CaptionCell (std::make_unique<LedButton> (apvts, "match", "=", col::ivory), "MATCH BYP", 44, 26);
@@ -393,6 +394,8 @@ void AtelierEditor::modeChanged (int newMode)
     image.setVisible (! isMix);
     limiter.setVisible (! isMix);
     eqMsBox->setVisible (! isMix);      // mid/side EQ only applies to busses and the master
+    ditherBox->setVisible (! isMix);    // dither belongs at the end of a bus print or a master
+    output.resized();
 
     guidePanel.setMode (mode);
     eq.resized();
@@ -554,7 +557,7 @@ void AtelierEditor::timerCallback()
     deEss.setGr (grDsDisp);
     limiter.setGr (grLimDisp);
     gateRead->set (juce::String (-grGateDisp, 1));
-    limRead->set (juce::String (-grLimDisp, 1));
+    fall (grClipDisp, take (m.grClip), 0.4f);
     lamp->set (apvts.getRawParameterValue ("tubeOn")->load() > 0.5f ? 0.12f + heatDisp * 0.6f : 0.0f);
 
     const float vuTarget = juce::jlimit (-40.0f, 6.0f, toDb (m.vuRms.load (std::memory_order_relaxed)) + 3.0f + 18.0f);
@@ -581,6 +584,7 @@ void AtelierEditor::timerCallback()
         r.inPeakDb = juce::jmax (inHold[0], inHold[1]);
         r.outPeakDb = peakHold;
         r.vu = vuDisp;          r.grComp = grCompDisp;  r.grDeEss = grDsDisp;
+        r.grClip = grClipDisp;
         r.grLim = grLimDisp;    r.heat = heatDisp;      r.lufsS = meterPanel.lufsS;
         r.matchDb = m.matchDb.load (std::memory_order_relaxed);   r.delta = proc.deltaListen.load();
         r.keyPeakDb = keyHold;  r.keyConnected = m.keyConnected.load (std::memory_order_relaxed);

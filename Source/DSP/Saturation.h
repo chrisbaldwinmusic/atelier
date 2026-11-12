@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Common.h"
+#include "TubeCircuit.h"
 
 /*  Analog colour stages. All of these are designed to run at the oversampled rate.
     Each stage is normalised to unity small-signal gain: turning up the drive pushes
@@ -9,19 +10,31 @@
 namespace atelier
 {
 //==============================================================================
-/** Valve preamp stage: asymmetric transfer curves with adjustable bias point. */
+/** Valve preamp stage.
+    Triode is a real 12AX7 gain stage solved as a circuit (see TubeCircuit.h) and checked
+    against ngspice. Pentode and Push-Pull are still transfer curves with an adjustable bias point. */
 struct TubeStage
 {
     enum Type { triode = 0, pentode, pushPull };
 
-    void prepare (double osRate)    { dc.setCutoff (osRate, 8.0); dc.reset(); }
-    void reset() noexcept           { dc.reset(); }
+    void prepare (double osRate)    { dc.setCutoff (osRate, 8.0); dc.reset(); circuit.prepare (osRate); }
+    void reset() noexcept           { dc.reset(); circuit.reset(); }
 
     /** @param headroom  mode-dependent calibration (1 = channel, lower = cleaner). */
     void set (int newType, float driveDb, float bias01, float headroom) noexcept
     {
         type   = newType;
         drive  = dbToGain (driveDb) * headroom;
+
+        if (type == triode)
+        {
+            // Bias chooses the cathode resistor, 600 ohms (hot, open) to 6k (cold, lopsided); 40 % is the textbook 1.5k.
+            // Full scale at 0 dB of drive puts 0.2 V on the grid, so a 0 VU signal sits where the stage is just colouring.
+            circuit.setCathodeResistor (600.0 * std::pow (10.0, (double) std::clamp (bias01, 0.0f, 1.0f)));
+            circuit.setInputScale (0.2 * (double) drive);
+            return;
+        }
+
         offset = bias01 * (type == pushPull ? 0.15f : (type == pentode ? 0.35f : 0.5f));
         s0     = shape (offset);
         const float slope = (shape (offset + 1.0e-3f) - shape (offset - 1.0e-3f)) / 2.0e-3f;
@@ -41,15 +54,27 @@ struct TubeStage
 
     void process (float* l, float* r, int n) noexcept
     {
+        if (type == triode)
+        {
+            // Left and right are worked through together, a sample of each in turn. Each channel's solve has to
+            // wait for its own previous sample, but the two are independent, so the processor can overlap them.
+            for (int i = 0; i < n; ++i)
+            {
+                l[i] = circuit.process (0, l[i]);
+                r[i] = circuit.process (1, r[i]);
+            }
+            return;
+        }
+
         float* chans[2] = { l, r };
         for (int ch = 0; ch < 2; ++ch)
         {
             float* x = chans[ch];
-            for (int i = 0; i < n; ++i)
-                x[i] = dc.hp (ch, (shape (drive * x[i] + offset) - s0) * norm);
+            for (int i = 0; i < n; ++i) x[i] = dc.hp (ch, (shape (drive * x[i] + offset) - s0) * norm);
         }
     }
 
+    TubeCircuit circuit;
     int type = triode;
     float drive = 1.0f, offset = 0.0f, s0 = 0.0f, norm = 1.0f;
     OnePole dc;
@@ -165,19 +190,18 @@ struct TapeStage
 
     void process (float* l, float* r, int n) noexcept
     {
+        // channels interleaved for the same reason as the valve stage: two independent chains overlap
         float* chans[2] = { l, r };
-        for (int ch = 0; ch < 2; ++ch)
-        {
-            float* x = chans[ch];
-            for (int i = 0; i < n; ++i)
+        for (int i = 0; i < n; ++i)
+            for (int ch = 0; ch < 2; ++ch)
             {
+                float* x = chans[ch];
                 const float u = pre.process (ch, x[i] * drive);
                 float y = post.process (ch, (float) hysteresis.process (ch, (double) u)) * inv;
                 y = bump.process (ch, y);
                 y = hp.process (ch, y);
                 x[i] = lp.process (ch, y);
             }
-        }
     }
 
     double sr = 384000.0;
@@ -243,5 +267,36 @@ struct IronStage
     double sPre[2] {}, sPost[2] {};
     float e = 0.05f, drive = 1.0f, inv = 1.0f;
     OnePole dc;
+};
+//==============================================================================
+/** Soft clipper used ahead of the limiter. Short peaks are rounded off instead of being
+    turned down, which keeps drums punchy where a limiter alone would duck everything.
+    `amount` blends it in: 0 leaves every peak to the limiter, 1 clips them all. */
+struct SoftClip
+{
+    /** Unity below the knee, then eases into a ceiling of 1. */
+    static inline float curve (float u) noexcept
+    {
+        constexpr float knee = 0.75f;
+        const float a = std::abs (u);
+        if (a <= knee) return u;
+        return std::copysign (knee + (1.0f - knee) * std::tanh ((a - knee) / (1.0f - knee)), u);
+    }
+
+    /** Returns the largest peak reduction in the block, in dB. */
+    static float process (float* l, float* r, int n, float threshold, float amount) noexcept
+    {
+        const float inv = 1.0f / threshold;
+        float in = 1.0e-9f, out = 1.0e-9f;
+        float* chans[2] = { l, r };
+        for (auto* x : chans)
+            for (int i = 0; i < n; ++i)
+            {
+                const float y = x[i] + amount * (curve (x[i] * inv) * threshold - x[i]);
+                in = std::max (in, std::abs (x[i])); out = std::max (out, std::abs (y));
+                x[i] = y;
+            }
+        return gainToDb (in) - gainToDb (out);
+    }
 };
 } // namespace atelier

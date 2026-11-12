@@ -20,7 +20,7 @@ struct Coach
 
     struct Readings
     {
-        float inPeakDb = -100, outPeakDb = -100, vu = -40, grComp = 0, grDeEss = 0, grLim = 0, heat = 0, lufsS = -100;
+        float inPeakDb = -100, outPeakDb = -100, vu = -40, grComp = 0, grDeEss = 0, grLim = 0, grClip = 0, heat = 0, lufsS = -100;
         float keyPeakDb = -100, matchDb = 0;
         bool keyConnected = false, delta = false;
     };
@@ -56,6 +56,8 @@ struct Coach
         if (m.inPeakDb > -1.0f)
             return { warn, "Input is very hot. The colour stages are calibrated for about 0 VU (-18 dBFS average); lower Input Gain for a cleaner, more controllable sound." };
 
+        if (! isMix && on ("limOn") && m.grClip > 4.0f)
+            return { warn, "The clipper is shaving " + juce::String (m.grClip, 1) + " dB off the peaks. Up to 2 or 3 dB is usually inaudible on drums; beyond that listen for a crunchy edge and lower Clip or Drive." };
         if (! isMix && on ("limOn") && m.grLim > (mode == 2 ? 6.0f : 4.0f))
             return { warn, "Limiter is removing " + juce::String (m.grLim, 1) + " dB. Past about 5 dB, kicks and snares lose punch; back off Drive or add density earlier with the compressor." };
 
@@ -104,7 +106,7 @@ struct Coach
     does roughly what its tips describe on any material, instead of nothing at all or far too much. */
 inline void applyStartingPoint (juce::AudioProcessor& processor, const guide::Source& source, float recentPeakDb)
 {
-    static const juce::StringArray untouched { "mode", "bypass", "inGain", "outGain", "phase", "lowLat", "gateExt", "compExt", "match" };
+    static const juce::StringArray untouched { "mode", "bypass", "inGain", "outGain", "phase", "lowLat", "gateExt", "compExt", "match", "dither" };
     static const juce::StringArray switches { "gateOn", "tubeOn", "dsOn", "eqOn", "compOn", "tapeOn", "ironOn", "imgOn", "limOn" };
     static const juce::StringArray thresholds { "gateThr", "dsThr", "compThr" };
 

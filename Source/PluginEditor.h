@@ -66,8 +66,9 @@ private:
     atelier::ui::MeterPanel meterPanel;
     atelier::ui::GuidePanel guidePanel;
     atelier::ui::TubeLamp* lamp = nullptr;
-    atelier::ui::Readout *gateRead = nullptr, *limRead = nullptr, *peakRead = nullptr;
-    juce::ComboBox* eqMsBox = nullptr;
+    atelier::ui::Readout *gateRead = nullptr, *peakRead = nullptr;
+    juce::ComboBox *eqMsBox = nullptr, *ditherBox = nullptr;
+    float grClipDisp = 0.0f;
     std::unique_ptr<atelier::ui::ChoiceButtons> modeButtons;
     std::unique_ptr<atelier::ui::LedButton> bypassButton, lowLatButton;
     float keyHold = -100.0f, recentIn = -100.0f;
