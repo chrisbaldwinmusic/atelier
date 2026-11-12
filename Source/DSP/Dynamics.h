@@ -2,6 +2,7 @@
 
 #include "Common.h"
 #include "ValveCircuits.h"
+#include "OptoCircuit.h"
 
 namespace atelier
 {
@@ -117,9 +118,9 @@ struct DeEsser
     VCA      feed-forward, RMS detector, firm knee, no added colour. Precise and punchy.
     FET      feedback (the detector listens to its own output), peak detector, very fast.
              The gain element distorts more the harder it works, as a FET does.
-    Opto     feed-forward into a light-cell model with memory: release starts fast, then
-             slows down the longer and harder it has been compressing. Valve make-up
-             stage adds a constant touch of 2nd harmonic.
+    Opto     feed-forward into a real light panel and photoresistive cell (OptoCell): the cell sets
+             the timing, quick to let go from heavy reduction, then slower and slower, and slower
+             still after long, heavy passages. Valve make-up stage adds a constant touch of 2nd harmonic.
     Vari-Mu  feedback, slow RMS detector, very wide knee so the ratio rises with level.
              Push-pull valve gain cell adds 3rd harmonic as gain reduction increases. */
 struct Compressor
@@ -139,16 +140,16 @@ struct Compressor
     {
         sr = sampleRate;
         dc.setCutoff (sr, 5.0);
-        memAtt = msToCoef (600.0f, sr);
         valves.prepare (sr);
         valves.setInputScale (4.0);         // a full-scale sample puts 4 V on each grid; see Vari-Mu below
+        cell.prepare (sr);
         voltsPerDb = valves.controlFor (10.0) / 10.0;
         reset();
     }
 
     void reset() noexcept
     {
-        scFilter.reset(); dc.reset(); valves.reset();
+        scFilter.reset(); dc.reset(); valves.reset(); cell.reset();
         ms = 0.0f; envFast = envSlow = 0.0f; fb[0] = fb[1] = 0.0f;
     }
 
@@ -166,8 +167,14 @@ struct Compressor
                 c2gr = 0.06f; c3gr = -0.50f;
                 break;
             case opto:
-                feedback = false; release = memory;
-                a = std::max (4.0f, a) * 1.5f;              knee = 10.0f; rmsMs = 6.0f;
+                // The gain element is a real light panel and photoresistive cell (OptoCell). The side chain only
+                // turns the reduction it wants into a voltage on the panel, quickly; the cell does the timing, and
+                // the knobs speed it up or slow it down. At its own pace the cell takes 71 ms to reach 90 % of a
+                // 12 dB reduction and 115 ms to let it back to 6 dB, so the attack knob is the first of those times
+                // and the release knob the second. Lighter reduction attacks more slowly, heavier lets go faster.
+                feedback = false; release = single;
+                cell.setTiming (71.0 / std::max (1.0f, a), 115.0 / r);
+                a = 0.5f; r = 5.0f;                         knee = 10.0f; rmsMs = 6.0f;
                 c2 = 0.035f; c3 = -0.02f;
                 break;
             case variMu:
@@ -186,9 +193,10 @@ struct Compressor
         // A feedback detector listens to its own output; with an external key there is no loop to close.
         if (p.external) feedback = false;
 
-        if (p.autoRelease && release == single) release = programme;
+        if (p.autoRelease && release == single && p.model != opto) release = programme;     // the cell is programme-dependent already
         coloured = p.model == fet || p.model == opto;
         valveGain = p.model == variMu;
+        optoGain = p.model == opto;
         knee += p.extraKnee;
         usesRms = rmsMs > 0.0f;
         rmsCoef = usesRms ? msToCoef (rmsMs, sr) : 1.0f;
@@ -208,9 +216,9 @@ struct Compressor
             attFast = msToCoef (a, sr);
         }
 
-        relFast = msToCoef (release == single ? r : r * (release == memory ? 0.35f : 0.4f), sr);
-        attSlow = release == memory ? memAtt : msToCoef (a * 8.0f, sr);
-        relSlow = msToCoef (r * (release == memory ? 5.0f : 4.0f), sr);
+        relFast = msToCoef (release == single ? r : r * 0.4f, sr);
+        attSlow = msToCoef (a * 8.0f, sr);
+        relSlow = msToCoef (r * 4.0f, sr);
 
         thr    = p.thresholdDb;
         makeup = dbToGain (p.makeupDb);
@@ -257,13 +265,7 @@ struct Compressor
             envFast += (target > envFast ? attFast : relFast) * (target - envFast);
             float gr = envFast;
 
-            if (release == memory)
-            {
-                // the cell "remembers": the longer it has been lit, the slower the last part of the release
-                envSlow += (envFast > envSlow ? attSlow : relSlow) * (envFast - envSlow);
-                gr = std::max (envFast, 0.6f * envSlow);
-            }
-            else if (release == programme)
+            if (release == programme)
             {
                 envSlow += (target > envSlow ? attSlow : relSlow) * (target - envSlow);
                 gr = 0.65f * envFast + 0.35f * envSlow;
@@ -277,6 +279,13 @@ struct Compressor
                 wl = valves.process (0, inL, control);
                 wr = valves.process (1, inR, control);
                 gr = (float) valves.reduction (control);       // what the valves actually take off, for the meter
+            }
+            else if (optoGain)
+            {
+                cell.step (OptoCell::voltsFor ((double) gr));
+                const float g = (float) cell.relativeGain();
+                wl = inL * g; wr = inR * g;
+                gr = (float) cell.reduction();                  // what the cell actually takes off, for the meter
             }
             else
             {
@@ -301,17 +310,18 @@ struct Compressor
         return maxGr;
     }
 
-    enum Release { single, programme, memory };
+    enum Release { single, programme };
 
     double sr = 48000.0;
     Biquad scFilter;
     OnePole dc;
     Release release = single;
-    bool useSc = false, usesRms = false, feedback = false, coloured = false, valveGain = false;
+    bool useSc = false, usesRms = false, feedback = false, coloured = false, valveGain = false, optoGain = false;
     VariMuCircuit valves;
+    OptoCell cell;
     double voltsPerDb = 1.6;
     float thr = -18.0f, slope = 0.75f, knee = 3.0f, makeup = 1.0f, mix = 1.0f;
-    float attFast = 0.01f, relFast = 0.001f, attSlow = 0.001f, relSlow = 0.0001f, rmsCoef = 1.0f, memAtt = 0.0001f;
+    float attFast = 0.01f, relFast = 0.001f, attSlow = 0.001f, relSlow = 0.0001f, rmsCoef = 1.0f;
     float c2 = 0.0f, c3 = 0.0f, c2gr = 0.0f, c3gr = 0.0f;
     float ms = 0.0f, envFast = 0.0f, envSlow = 0.0f, fb[2] {};
 };

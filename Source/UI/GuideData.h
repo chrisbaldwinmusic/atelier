@@ -145,7 +145,7 @@ inline const std::vector<Help> help =
       "Turns loud moments down so the overall level is steadier, then Makeup brings everything back up. Four circuit models with different personalities.",
       "Watch the GR strip, or click the VU to show gain reduction. Decide what you want first: control, punch or glue. That choice picks the model and the timing." },
     { "compModel", "Compressor Model",
-      "VCA: clean, precise and punchy, the classic bus glue. FET: extremely fast and aggressive. Opto: smooth, with a release that slows down the harder it works. Vari-Mu: the gentlest, with a ratio that rises with level. Its gain is turned down by a real pair of remote-cutoff valves, solved as a circuit: the compression eases in, and the harder it works the more the valves colour the sound.",
+      "VCA: clean, precise and punchy, the classic bus glue. FET: extremely fast and aggressive. Opto: smooth. Its gain is turned down by a real light panel shining on a photocell: it lets go of heavy reduction quickly, then more and more slowly, and lingers a little longer after long, heavy passages. Vari-Mu: the gentlest, with a ratio that rises with level. Its gain is turned down by a real pair of remote-cutoff valves, solved as a circuit: the compression eases in, and the harder it works the more the valves colour the sound.",
       "Vocals and bass: Opto. Drums and anything needing attitude: FET. Drum, mix bus and master glue: VCA. Master and vocal bus thickness: Vari-Mu." },
     { "compThr", "Compressor Threshold",
       "The level above which compression begins. Lower it and more of the signal gets compressed.",

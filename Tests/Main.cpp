@@ -309,6 +309,31 @@ int main (int argc, char** argv)
         const Reading muBursts = measure (3, -9.0f, true), vcaBursts = measure (0, -9.0f, true);
         std::cout << "  gain swinging 25 dB in 1 ms: below 20 Hz, vari-mu " << muBursts.out << " dBFS, VCA " << vcaBursts.out << " dBFS" << std::endl;
         check (muBursts.out < vcaBursts.out + 6.0f && muBursts.out < -50.0f, "the vari-mu's valve pair is balanced: fast gain changes don't thump");
+
+        // The opto's timing comes from its light-dependent cell: held at a reduction, then left in the dark
+        struct Opto { double attack90, releaseHalf, after3s; };
+        auto opto = [&] (double grDb, double hold, double attackScale = 1.0, double releaseScale = 1.0)
+        {
+            atelier::OptoCell c;
+            c.prepare (sr);
+            c.setTiming (attackScale, releaseScale);
+            Opto o { -1.0, -1.0, 0.0 };
+            const double v = atelier::OptoCell::voltsFor (grDb);
+            for (int i = 1; i <= (int) (hold * sr); ++i) { c.step (v); if (o.attack90 < 0.0 && c.reduction() >= 0.9 * grDb) o.attack90 = 1000.0 * i / sr; }
+            const double held = c.reduction();
+            for (int i = 1; i <= (int) (3.0 * sr); ++i) { c.step (0.0); if (o.releaseHalf < 0.0 && c.reduction() <= 0.5 * held) o.releaseHalf = 1000.0 * i / sr; }
+            o.after3s = c.reduction();
+            return o;
+        };
+        const Opto own = opto (12.0, 0.5), heavy = opto (20.0, 0.5), light = opto (6.0, 0.5), brief = opto (20.0, 0.1), longHeavy = opto (20.0, 3.0), quick = opto (12.0, 0.5, 71.0 / 10.0, 115.0 / 50.0);
+        std::cout << "  opto cell at its own pace: 12 dB reached (90 %) in " << own.attack90 << " ms, back to 6 dB in " << own.releaseHalf << " ms" << std::endl;
+        std::cout << "    first half of the release: from 20 dB " << heavy.releaseHalf << " ms, from 12 dB " << own.releaseHalf << " ms, from 6 dB " << light.releaseHalf << " ms" << std::endl;
+        std::cout << "    3 s after 20 dB: " << brief.after3s << " dB left after a 0.1 s passage, " << longHeavy.after3s << " dB after 3 s" << std::endl;
+        std::cout << "    knobs at 10 ms attack, 50 ms release: " << quick.attack90 << " ms, " << quick.releaseHalf << " ms" << std::endl;
+        check (std::abs (own.attack90 - 71.0) < 3.0 && std::abs (own.releaseHalf - 115.0) < 5.0, "the opto cell's own pace is what the knobs are calibrated to");
+        check (std::abs (quick.attack90 - 10.0) < 1.0 && std::abs (quick.releaseHalf - 50.0) < 3.0, "the opto's attack and release knobs mean what they say at 12 dB");
+        check (heavy.releaseHalf < own.releaseHalf && own.releaseHalf < light.releaseHalf, "the opto lets go of heavy reduction faster than light");
+        check (longHeavy.after3s > 2.0 * brief.after3s && brief.after3s < 0.5, "the opto remembers: after a long, heavy passage the last of the reduction lingers");
     }
 
     if (want ("Tape hysteresis"))
@@ -1086,6 +1111,89 @@ int main (int argc, char** argv)
             }
 
             {
+                // The opto cell at the compressor's rate: the panel driven as the side chain drives it (held, then
+                // released; hard and long; and in quick bursts), with the knobs at the cell's own pace and sped up.
+                using OC = atelier::OptoCell;
+                const double rate = 48000.0, length = 1.5;
+                struct Case { std::vector<std::pair<double, double>> drive; double sa, sr; const char* what; };
+                const double v12 = OC::voltsFor (12.0), v20 = OC::voltsFor (20.0), v30 = OC::voltsFor (30.0);
+                std::vector<std::pair<double, double>> bursts { { 0.0, 0.0 } };
+                for (int k = 0; k < 6; ++k)
+                {
+                    const double t0 = 0.05 + 0.1 * k;
+                    bursts.insert (bursts.end(), { { t0, 0.0 }, { t0 + 0.001, v20 }, { t0 + 0.05, v20 }, { t0 + 0.051, 0.0 } });
+                }
+                const Case cases[] = { { { { 0, 0 }, { 0.005, v12 }, { 0.5, v12 }, { 0.501, 0 } }, 1.0, 1.0, "12 dB for half a second, own pace" },
+                                       { { { 0, 0 }, { 0.005, v12 }, { 0.5, v12 }, { 0.501, 0 } }, 4.0, 2.0, "12 dB for half a second, knobs faster" },
+                                       { { { 0, 0 }, { 0.005, v30 }, { 1.0, v30 }, { 1.001, 0 } }, 1.0, 1.0, "30 dB for a second" },
+                                       { bursts, 8.0, 3.0, "20 dB in 50 ms bursts" } };
+                float worst = -200.0f;
+                for (const auto& c : cases)
+                {
+                    auto at = [&c] (double t)
+                    {
+                        const auto& d = c.drive;
+                        for (size_t k = 1; k < d.size(); ++k)
+                            if (t <= d[k].first) return d[k - 1].second + (d[k].second - d[k - 1].second) * (t - d[k - 1].first) / (d[k].first - d[k - 1].first);
+                        return d.back().second;
+                    };
+                    juce::String pwl ("PWL(");
+                    for (const auto& [t, v] : c.drive) pwl << juce::String (t, 6) << " " << juce::String (v, 9) << " ";
+                    pwl = pwl.trimEnd() + ")";
+
+                    const auto deck = outDir.getChildFile ("opto.cir"), data = outDir.getChildFile ("opto.txt");
+                    data.deleteFile();
+                    auto num = [] (double v) { return juce::String (v, 12); };
+                    deck.replaceWithText (juce::String ("Opto cell\n")
+                        + "Vv v 0 " + pwl + "\n"
+                        + "BA a 0 V=V(v)>1e-3 ? exp(-" + num (OC::panelB) + "/sqrt(V(v))) : 0\n"
+                        + "BL 0 l I=(V(a)-V(l))/" + num (OC::panelTau) + "\nCL l 0 1\n"
+                        + "Br r 0 V=" + num (OC::gain) + "*V(l)-V(x)/" + num (OC::lifetime) + "-" + num (OC::pairRate) + "*V(x)*V(x)-"
+                            + num (OC::capture) + "*V(x)*(1-V(z))+" + num (OC::trapCap) + "*V(z)/" + num (OC::trapTime) + "\n"
+                        + "Bx 0 x I=V(r)>0 ? " + num (c.sa) + "*V(r) : " + num (c.sr) + "*V(r)\nCx x 0 1\n"
+                        + "Bz 0 z I=(" + num (OC::capture) + "*V(x)*(1-V(z))-" + num (OC::trapCap) + "*V(z)/" + num (OC::trapTime) + ")/" + num (OC::trapCap) + "\nCz z 0 1\n"
+                        + "Vin in 0 SIN(0 1 220)\nRs in out " + num (OC::Rs) + "\n"
+                        + "Bc out 0 I=V(out)*(V(x)+" + num (OC::xd) + ")/" + num (OC::Rs) + "\n"
+                        + ".ic V(l)=0 V(x)=0 V(z)=0\n.options reltol=1e-6\n.control\ntran " + juce::String (1.0 / rate, 15) + " " + juce::String (length)
+                        + " 0 " + juce::String (0.5 / rate, 15) + " uic\nlinearize v(out)\nwrdata opto.txt v(out)\n.endc\n.end\n");
+                    juce::ChildProcess proc;
+                    juce::StringArray cmd { "/bin/sh", "-c", "cd " + outDir.getFullPathName().quoted() + " && SPICE_LIB_DIR="
+                                                                 + ngspice.getParentDirectory().getSiblingFile ("share/ngspice").getFullPathName().quoted()
+                                                                 + " " + ngspice.getFullPathName().quoted() + " -b opto.cir > /dev/null 2>&1" };
+                    std::vector<double> ref;
+                    if (proc.start (cmd) && proc.waitForProcessToFinish (300000))
+                    {
+                        juce::StringArray lines;
+                        lines.addLines (data.loadFileAsString());
+                        for (const auto& line : lines)
+                        {
+                            const auto parts = juce::StringArray::fromTokens (line.trim(), " \t", "");
+                            if (parts.size() >= 2) ref.push_back (parts[parts.size() - 1].getDoubleValue());
+                        }
+                    }
+                    const int n = (int) (length * rate) - 2;
+                    if ((int) ref.size() < n) { check (false, juce::String ("ngspice produced a reference for the opto cell, ") + c.what); continue; }
+
+                    OC cell;
+                    cell.prepare (rate);
+                    cell.setTiming (c.sa, c.sr);
+                    double err = 0.0, sig = 0.0, peakGr = 0.0;
+                    for (int i = 0; i < n; ++i)
+                    {
+                        const double t = i / rate;
+                        if (i > 0) cell.step (at (t));
+                        peakGr = std::max (peakGr, cell.reduction());
+                        const double y = cell.divide (std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * t));
+                        if (t >= 0.01) { err += (y - ref[(size_t) i]) * (y - ref[(size_t) i]); sig += ref[(size_t) i] * ref[(size_t) i]; }
+                    }
+                    const float diff = (float) (10.0 * std::log10 (std::max (1.0e-30, err / sig)));
+                    worst = std::max (worst, diff);
+                    std::cout << "  opto cell, " << c.what << " (peak " << peakGr << " dB): difference from ngspice " << diff << " dB" << std::endl;
+                }
+                check (worst < -60.0f, "the opto cell matches the ngspice simulation of the same circuit to better than -60 dB");
+            }
+
+            {
                 // The output transformers at the rate they run at, from quiet to well into saturation, at 40 Hz
                 // (where the core saturates) and 1 kHz (where leakage and winding capacitance start to matter).
                 using IC = atelier::IronCircuit;
@@ -1298,6 +1406,11 @@ int main (int argc, char** argv)
             const double percent = cost (1, 0, 3);
             std::cout << "  mode 1 with the Vari-Mu compressor: " << percent << " % of one core at 48 kHz" << std::endl;
             check (percent < 18.0, "CPU use is reasonable with the Vari-Mu compressor");
+        }
+        {
+            const double percent = cost (1, 0, 2);
+            std::cout << "  mode 1 with the Opto compressor: " << percent << " % of one core at 48 kHz" << std::endl;
+            check (percent < 15.0, "CPU use is reasonable with the Opto compressor");
         }
         // the pentode has a third electrode to solve for and the push-pull pair a second valve, so both cost more than the triode
         static const char* valves[] = { "triode", "pentode", "push-pull" };
