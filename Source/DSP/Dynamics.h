@@ -122,7 +122,7 @@ struct DeEsser
              on loud material right where it starts to bite.
     Opto     feed-forward into a real light panel and photoresistive cell (OptoCell): the cell sets
              the timing, quick to let go from heavy reduction, then slower and slower, and slower
-             still after long, heavy passages. Valve make-up stage adds a constant touch of 2nd harmonic.
+             still after long, heavy passages. A real 12AX7 make-up stage adds a touch of 2nd harmonic.
     Vari-Mu  feedback, slow RMS detector, very wide knee so the ratio rises with level.
              Push-pull valve gain cell adds 3rd harmonic as gain reduction increases. */
 struct Compressor
@@ -141,7 +141,8 @@ struct Compressor
     void prepare (double sampleRate)
     {
         sr = sampleRate;
-        dc.setCutoff (sr, 5.0);
+        makeupValve.prepare (sr);
+        makeupValve.setInputScale (0.25);   // a full-scale sample puts 0.25 V on the grid: a touch of 2nd harmonic
         valves.prepare (sr);
         valves.setInputScale (4.0);         // a full-scale sample puts 4 V on each grid; see Vari-Mu below
         cell.prepare (sr);
@@ -153,7 +154,7 @@ struct Compressor
 
     void reset() noexcept
     {
-        scFilter.reset(); dc.reset(); valves.reset(); cell.reset(); fetCell.reset();
+        scFilter.reset(); makeupValve.reset(); valves.reset(); cell.reset(); fetCell.reset();
         ms = 0.0f; envFast = envSlow = 0.0f; fb[0] = fb[1] = 0.0f;
     }
 
@@ -161,7 +162,6 @@ struct Compressor
     {
         float a = p.attackMs, r = p.releaseMs, rmsMs = 0.0f;
         const float ratio = std::max (1.0f, p.ratio);
-        c2 = c3 = 0.0f;
 
         switch (p.model)
         {
@@ -180,7 +180,6 @@ struct Compressor
                 feedback = false; release = single;
                 cell.setTiming (71.0 / std::max (1.0f, a), 115.0 / r);
                 a = 0.5f; r = 5.0f;                         knee = 10.0f; rmsMs = 6.0f;
-                c2 = 0.035f; c3 = -0.02f;
                 break;
             case variMu:
                 // The gain element is a real pair of remote-cutoff valves (VariMuCircuit). The side chain turns the
@@ -199,7 +198,6 @@ struct Compressor
         if (p.external) feedback = false;
 
         if (p.autoRelease && release == single && p.model != opto) release = programme;     // the cell is programme-dependent already
-        coloured = p.model == opto;
         valveGain = p.model == variMu;
         optoGain = p.model == opto;
         fetGain = p.model == fet;
@@ -306,12 +304,12 @@ struct Compressor
             }
             fb[0] = wl; fb[1] = wr;
 
-            if (coloured)
+            if (optoGain)
             {
-                // the opto's valve make-up stage: a constant touch of 2nd harmonic
-                const float xl = std::clamp (wl, -1.5f, 1.5f), xr = std::clamp (wr, -1.5f, 1.5f);
-                wl = dc.hp (0, wl + xl * xl * (c2 + c3 * xl));
-                wr = dc.hp (1, wr + xr * xr * (c2 + c3 * xr));
+                // the opto's make-up amplifier: a real 12AX7 stage (TubeCircuit), the valve the classic optical
+                // compressors use after their cell. It runs at the compressor's rate, as the gain cells do.
+                wl = makeupValve.process (0, wl);
+                wr = makeupValve.process (1, wr);
             }
 
             l[i] = inL + mix * (wl * makeup - inL);
@@ -325,16 +323,15 @@ struct Compressor
 
     double sr = 48000.0;
     Biquad scFilter;
-    OnePole dc;
+    TubeCircuit makeupValve;
     Release release = single;
-    bool useSc = false, usesRms = false, feedback = false, coloured = false, valveGain = false, optoGain = false, fetGain = false;
+    bool useSc = false, usesRms = false, feedback = false, valveGain = false, optoGain = false, fetGain = false;
     VariMuCircuit valves;
     OptoCell cell;
     FetCircuit fetCell;
     double voltsPerDb = 1.6;
     float thr = -18.0f, slope = 0.75f, knee = 3.0f, makeup = 1.0f, mix = 1.0f;
     float attFast = 0.01f, relFast = 0.001f, attSlow = 0.001f, relSlow = 0.0001f, rmsCoef = 1.0f;
-    float c2 = 0.0f, c3 = 0.0f;
     float ms = 0.0f, envFast = 0.0f, envSlow = 0.0f, fb[2] {};
 };
 

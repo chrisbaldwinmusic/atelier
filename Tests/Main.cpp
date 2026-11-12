@@ -333,6 +333,27 @@ int main (int argc, char** argv)
         check (fetLight.second > -50.0f && fetHeavy.second < fetLight.second - 20.0f, "the FET colours loud material as it starts to bite, and cleans up when it is turned on hard");
         check (fetBursts.out < -40.0f, "the FET's control voltage barely reaches the audio when the gain moves fast");
 
+        // The opto's make-up amplifier is a real 12AX7 stage: mostly 2nd harmonic, growing with level
+        auto optoColour = [&] (double freq, float levelDb, double at)
+        {
+            AtelierProcessor p;
+            p.setPlayConfigDetails (2, 2, sr, 512);
+            p.prepareToPlay (sr, 512);
+            setParam (p, "tubeOn", 0.0f);
+            setParam (p, "compOn", 1.0f); setParam (p, "compModel", 2.0f); setParam (p, "compThr", 0.0f);
+            auto b = sine (2, len, sr, freq, levelDb);
+            run (p, b, 512);
+            return toneDb (b, 24000, sr, at) - toneDb (b, 24000, sr, freq);
+        };
+        const float optoH2Loud = optoColour (1000.0, -6.0f, 2000.0), optoH3Loud = optoColour (1000.0, -6.0f, 3000.0), optoH2Quiet = optoColour (1000.0, -18.0f, 2000.0);
+        const float optoAlias = std::max (optoColour (15000.0, -6.0f, 18000.0), optoColour (15000.0, -6.0f, 3000.0));
+        std::cout << "  opto make-up valve, 1 kHz: H2 " << optoH2Loud << " dBc, H3 " << optoH3Loud << " dBc at -6 dBFS; H2 " << optoH2Quiet << " dBc at -18 dBFS" << std::endl;
+        std::cout << "    15 kHz at -6 dBFS: largest alias (18 kHz or 3 kHz) " << optoAlias << " dBc" << std::endl;
+        check (optoH2Loud > -48.0f && optoH2Loud < -36.0f && optoH3Loud < optoH2Loud - 15.0f && optoH2Quiet < optoH2Loud - 9.0f,
+               "the opto's 12AX7 make-up stage adds a touch of 2nd harmonic that grows with level");
+        // it runs at the compressor's rate, as the polynomial it replaced did, so it aliases as that did and no worse
+        check (optoAlias < -40.0f, "the opto's make-up stage aliases no more than the colour it replaced");
+
         // The opto's timing comes from its light-dependent cell: held at a reduction, then left in the dark
         struct Opto { double attack90, releaseHalf, after3s; };
         auto opto = [&] (double grDb, double hold, double attackScale = 1.0, double releaseScale = 1.0)
