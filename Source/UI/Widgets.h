@@ -91,6 +91,101 @@ inline void paintPanel (juce::Graphics& g, juce::Rectangle<float> r)
 }
 
 //==============================================================================
+/** How a control looks and behaves. The form says what the control does: one large knob per module for the
+    control you reach for first, trim pots for calibration you set once, a centre-detent arc for cut and boost,
+    and a chicken-head pointer over printed values for controls with natural steps. */
+struct ControlStyle
+{
+    enum Size { hero, standard, small, trim };
+    enum Shape { rotary, fader, horizontal };
+
+    Size size = standard;
+    Shape shape = rotary;
+    bool bipolar = false;                                   // the scale grows either way from `origin`
+    double origin = 0.0;
+    std::vector<std::pair<double, juce::String>> detents;   // printed steps; the knob snaps to them while dragged
+    double snapNear = 0.0;                                  // for a slider: snap to `origin` within this distance
+
+    static ControlStyle make (Size s)                       { ControlStyle c; c.size = s; return c; }
+    static ControlStyle centred (double o = 0.0)            { ControlStyle c; c.bipolar = true; c.origin = o; return c; }
+    static ControlStyle stepped (std::vector<std::pair<double, juce::String>> d) { ControlStyle c; c.detents = std::move (d); return c; }
+};
+
+/** A slider that knows its style, and snaps to its steps while dragged (hold Option/Alt to move freely). */
+class StyledSlider final : public juce::Slider
+{
+public:
+    ControlStyle style;
+
+    double snapValue (double attempted, DragMode mode) override
+    {
+        if (mode == notDragging || juce::ModifierKeys::currentModifiers.isAltDown()) return attempted;
+
+        if (! style.detents.empty())
+        {
+            double best = attempted, distance = 1.0e9;
+            const double at = valueToProportionOfLength (attempted);
+            for (auto& d : style.detents)
+                if (const double gap = std::abs (valueToProportionOfLength (d.first) - at); gap < distance) { distance = gap; best = d.first; }
+            return best;
+        }
+        if (style.snapNear > 0.0 && std::abs (attempted - style.origin) < style.snapNear) return style.origin;
+        return attempted;
+    }
+};
+
+/** A chicken-head pointer knob: a dark enamel pointer with an engraved line, on a brass plate. */
+inline void paintChickenHead (juce::Graphics& g, juce::Point<float> centre, float r, float angle)
+{
+    g.setColour (juce::Colours::black.withAlpha (0.45f));
+    g.fillEllipse (juce::Rectangle<float> (r * 1.5f, r * 1.5f).withCentre (centre.translated (0.0f, 2.5f)));
+    auto plate = juce::Rectangle<float> (r * 1.42f, r * 1.42f).withCentre (centre);
+    paintSpunMetal (g, plate, col::goldLight.darker (0.15f), col::goldDark.darker (0.3f));
+    g.setColour (col::ink.withAlpha (0.8f));
+    g.drawEllipse (plate, 1.0f);
+
+    juce::Path head;
+    head.addEllipse (-r * 0.5f, -r * 0.5f, r, r);
+    head.startNewSubPath (-r * 0.2f, -r * 0.3f);
+    head.quadraticTo (-r * 0.12f, -r * 0.8f, 0.0f, -r * 1.0f);
+    head.quadraticTo (r * 0.12f, -r * 0.8f, r * 0.2f, -r * 0.3f);
+    head.closeSubPath();
+    const auto turn = juce::AffineTransform::rotation (angle).translated (centre);
+
+    g.setColour (juce::Colours::black.withAlpha (0.5f));
+    g.fillPath (head, juce::AffineTransform::rotation (angle).translated (centre.translated (0.0f, 2.0f)));
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff3a332b), centre.x, centre.y - r, juce::Colour (0xff0c0a08), centre.x, centre.y + r, false));
+    g.fillPath (head, turn);
+    g.setColour (col::goldLight.withAlpha (0.25f));
+    g.strokePath (head, juce::PathStrokeType (0.8f), turn);
+
+    juce::Path line;
+    line.startNewSubPath (0.0f, -r * 0.15f);
+    line.lineTo (0.0f, -r * 0.88f);
+    g.setColour (col::cream);
+    g.strokePath (line, juce::PathStrokeType (1.5f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded), turn);
+}
+
+/** Printed legends round a knob: a tick and a label at each step, the chosen one picked out. */
+inline void paintLegends (juce::Graphics& g, juce::Point<float> centre, float r, const std::vector<std::pair<float, juce::String>>& marks, int chosen, juce::Colour accent)
+{
+    g.setFont (font (8.5f, true));
+    for (int i = 0; i < (int) marks.size(); ++i)
+    {
+        const float a = marks[(size_t) i].first;
+        const bool on = i == chosen;
+        g.setColour (on ? accent.brighter (0.4f) : col::creamDim.withAlpha (0.7f));
+        g.drawLine ({ centre.getPointOnCircumference (r + 2.0f, a), centre.getPointOnCircumference (r + (on ? 7.0f : 5.5f), a) }, on ? 1.6f : 1.0f);
+        if (marks[(size_t) i].second.isNotEmpty())
+        {
+            g.setColour (on ? col::cream : col::creamDim);
+            g.drawText (marks[(size_t) i].second, juce::Rectangle<float> (46.0f, 11.0f).withCentre (centre.getPointOnCircumference (r + 15.0f, a)),
+                        juce::Justification::centred, false);
+        }
+    }
+}
+
+//==============================================================================
 class AtelierLookAndFeel final : public juce::LookAndFeel_V4
 {
 public:
@@ -109,18 +204,79 @@ public:
     void drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos,
                            float startAngle, float endAngle, juce::Slider& slider) override
     {
+        const auto* styled = dynamic_cast<StyledSlider*> (&slider);
+        const ControlStyle style = styled != nullptr ? styled->style : ControlStyle();
         const auto accent = slider.findColour (juce::Slider::thumbColourId);
         const auto area = juce::Rectangle<int> (x, y, w, h).toFloat();
         const auto centre = area.getCentre();
-        const float radius = juce::jmin (area.getWidth(), area.getHeight()) * 0.5f - 9.0f;
-        if (radius < 6.0f) return;
+        const float full = juce::jmin (area.getWidth(), area.getHeight()) * 0.5f - 9.0f;
+        if (full < 6.0f) return;
+        const float angle = startAngle + pos * (endAngle - startAngle);
+        auto angleOf = [&] (double v) { return startAngle + (float) slider.valueToProportionOfLength (v) * (endAngle - startAngle); };
 
+        if (! style.detents.empty())
+        {
+            // printed steps round a chicken-head pointer
+            const float r = full * 0.62f;
+            std::vector<std::pair<float, juce::String>> marks;
+            int chosen = -1; double nearest = 1.0e9;
+            for (auto& d : style.detents)
+            {
+                marks.push_back ({ angleOf (d.first), d.second });
+                if (const double gap = std::abs (d.first - slider.getValue()); gap < nearest) { nearest = gap; chosen = (int) marks.size() - 1; }
+            }
+            if (nearest > 1.0e-3 * (slider.getMaximum() - slider.getMinimum())) chosen = -1;     // between steps (Option-dragged or automated)
+            paintLegends (g, centre, r, marks, chosen, accent);
+            paintChickenHead (g, centre, r * 0.92f, angle);
+            return;
+        }
+
+        if (style.size == ControlStyle::trim)
+        {
+            // a recessed trim pot: set it once with a screwdriver
+            const float r = full * 0.46f;
+            for (int i = 0; i < 7; ++i)
+            {
+                const float t = (float) i / 6.0f;
+                const auto p = centre.getPointOnCircumference (r * 1.55f, startAngle + t * (endAngle - startAngle));
+                g.setColour (t <= pos + 0.001f ? accent.withMultipliedBrightness (1.1f) : col::ledOff.brighter (0.15f));
+                g.fillEllipse (p.x - 1.1f, p.y - 1.1f, 2.2f, 2.2f);
+            }
+            auto well = juce::Rectangle<float> (r * 2.5f, r * 2.5f).withCentre (centre);
+            g.setGradientFill (juce::ColourGradient (juce::Colours::black, centre.x, well.getY(), col::panel.brighter (0.1f), centre.x, well.getBottom(), false));
+            g.fillEllipse (well);
+            auto head = juce::Rectangle<float> (r * 2.0f, r * 2.0f).withCentre (centre);
+            paintSpunMetal (g, head, col::goldLight.darker (0.1f), col::goldDark);
+            g.setColour (col::ink.withAlpha (0.7f));
+            g.drawEllipse (head, 0.8f);
+            juce::Path slot;
+            slot.addRoundedRectangle (-r * 0.8f, -r * 0.13f, r * 1.6f, r * 0.26f, r * 0.1f);
+            const auto turn = juce::AffineTransform::rotation (angle + juce::MathConstants<float>::halfPi).translated (centre);
+            g.setColour (col::goldLight.withAlpha (0.45f));
+            g.fillPath (slot, juce::AffineTransform::translation (0.0f, 0.7f).followedBy (turn));
+            g.setColour (col::ink);
+            g.fillPath (slot, turn);
+            // the pointer end of the slot, so the setting can be read
+            g.setColour (accent.brighter (0.3f));
+            g.fillEllipse (juce::Rectangle<float> (2.4f, 2.4f).withCentre (centre.getPointOnCircumference (r * 0.62f, angle)));
+            return;
+        }
+
+        const float scale = style.size == ControlStyle::hero ? 1.0f : (style.size == ControlStyle::small ? 0.7f : 0.84f);
+        const float radius = full * scale;
+
+        // scale dots: from the start, or for a centre-detent control from its centre out to the setting
+        const float originT = style.bipolar ? (float) slider.valueToProportionOfLength (style.origin) : 0.0f;
         for (int i = 0; i < 11; ++i)
         {
             const float t = (float) i / 10.0f;
             const auto p = centre.getPointOnCircumference (radius + 5.5f, startAngle + t * (endAngle - startAngle));
-            g.setColour (t <= pos + 0.001f ? accent.withMultipliedBrightness (1.15f) : col::ledOff.brighter (0.15f));
-            g.fillEllipse (p.x - 1.4f, p.y - 1.4f, 2.8f, 2.8f);
+            const bool lit = style.bipolar ? (t >= juce::jmin (originT, pos) - 0.001f && t <= juce::jmax (originT, pos) + 0.001f)
+                                           : t <= pos + 0.001f;
+            const bool isOrigin = style.bipolar && std::abs (t - originT) < 0.05f;
+            g.setColour (lit ? accent.withMultipliedBrightness (1.15f) : (isOrigin ? col::creamDim : col::ledOff.brighter (0.15f)));
+            const float d = isOrigin ? 4.0f : 2.8f;
+            g.fillEllipse (p.x - d * 0.5f, p.y - d * 0.5f, d, d);
         }
 
         g.setColour (juce::Colours::black.withAlpha (0.45f));
@@ -130,11 +286,24 @@ public:
         g.setGradientFill (juce::ColourGradient (juce::Colour (0xff4d4840), centre.x, skirt.getY(),
                                                  juce::Colour (0xff100f0d), centre.x, skirt.getBottom(), false));
         g.fillEllipse (skirt);
+
+        if (style.size == ControlStyle::hero)
+        {
+            // knurled grip round the edge, turning with the knob
+            constexpr int ridges = 40;
+            for (int k = 0; k < ridges; ++k)
+            {
+                const float a = angle + juce::MathConstants<float>::twoPi * (float) k / (float) ridges;
+                const float lightness = 0.5f + 0.5f * std::cos (a - juce::MathConstants<float>::pi * 1.25f);
+                g.setColour (col::goldDark.interpolatedWith (col::goldLight, 0.15f + 0.5f * lightness).withAlpha (0.85f));
+                g.drawLine ({ centre.getPointOnCircumference (radius * 0.84f, a), centre.getPointOnCircumference (radius * 0.98f, a) }, 1.4f);
+            }
+        }
         g.setColour (juce::Colours::black.withAlpha (0.8f));
         g.drawEllipse (skirt, 1.0f);
 
         // the cap is turned brass; the module colour lives in the scale dots around it
-        auto cap = skirt.reduced (radius * 0.2f);
+        auto cap = skirt.reduced (radius * (style.size == ControlStyle::hero ? 0.22f : 0.2f));
         g.setColour (col::goldDark.darker (0.6f));
         g.fillEllipse (cap.expanded (1.2f));
         paintSpunMetal (g, cap, col::goldLight, col::goldDark);
@@ -144,13 +313,78 @@ public:
         g.drawEllipse (cap.reduced (radius * 0.13f), 0.8f);
 
         // engraved pointer, filled with dark enamel
-        const auto turn = juce::AffineTransform::rotation (startAngle + pos * (endAngle - startAngle)).translated (centre);
+        const auto turn = juce::AffineTransform::rotation (angle).translated (centre);
         juce::Path pointer;
-        pointer.addRoundedRectangle (-1.6f, -radius * 0.78f, 3.2f, radius * 0.50f, 1.6f);
+        pointer.addRoundedRectangle (-1.6f, -radius * 0.76f, 3.2f, radius * 0.48f, 1.6f);
         g.setColour (col::goldLight.withAlpha (0.5f));
         g.fillPath (pointer, juce::AffineTransform::translation (0.0f, 0.8f).followedBy (turn));
         g.setColour (col::ink);
         g.fillPath (pointer, turn);
+    }
+
+    void drawLinearSlider (juce::Graphics& g, int x, int y, int w, int h, float sliderPos, float, float,
+                           juce::Slider::SliderStyle sliderStyle, juce::Slider& slider) override
+    {
+        const auto* styled = dynamic_cast<StyledSlider*> (&slider);
+        const ControlStyle style = styled != nullptr ? styled->style : ControlStyle();
+        const auto accent = slider.findColour (juce::Slider::thumbColourId);
+        const bool vertical = sliderStyle == juce::Slider::LinearVertical;
+        const auto area = juce::Rectangle<int> (x, y, w, h).toFloat();
+
+        // the slot, with a scale printed beside it: a fader's to the right, a horizontal slider's underneath
+        auto slot = vertical ? juce::Rectangle<float> (5.0f, area.getHeight()).withCentre ({ area.getX() + 17.0f, area.getCentreY() })
+                             : juce::Rectangle<float> (area.getWidth(), 5.0f).withCentre ({ area.getCentreX(), area.getY() + 14.0f });
+        g.setColour (juce::Colours::black);
+        g.fillRoundedRectangle (slot, 2.5f);
+        g.setColour (col::wellEdge);
+        g.drawRoundedRectangle (slot, 2.5f, 0.8f);
+
+        auto at = [&] (double v) { const float t = (float) slider.valueToProportionOfLength (v);
+                                   return vertical ? area.getBottom() - t * area.getHeight() : area.getX() + t * area.getWidth(); };
+        g.setFont (font (8.0f, true));
+        for (auto& d : style.detents)
+        {
+            const float p = at (d.first);
+            const bool origin = style.bipolar && std::abs (d.first - style.origin) < 1.0e-6;
+            g.setColour (origin ? col::cream : col::creamDim.withAlpha (0.75f));
+            if (vertical)
+            {
+                g.drawLine (slot.getRight() + 13.0f, p, slot.getRight() + (origin ? 21.0f : 18.0f), p, origin ? 1.4f : 1.0f);
+                g.drawText (d.second, juce::Rectangle<float> (slot.getRight() + 23.0f, p - 5.5f, 26.0f, 11.0f), juce::Justification::centredLeft, false);
+            }
+            else
+            {
+                g.drawLine (p, slot.getBottom() + 12.0f, p, slot.getBottom() + (origin ? 18.0f : 15.0f), origin ? 1.4f : 1.0f);
+                const auto just = &d == &style.detents.front() ? juce::Justification::centredLeft
+                                : &d == &style.detents.back() ? juce::Justification::centredRight : juce::Justification::centred;
+                auto box = juce::Rectangle<float> (40.0f, 10.0f).withCentre ({ p, slot.getBottom() + 24.0f });
+                if (just == juce::Justification::centredLeft) box.setX (p - 2.0f);
+                if (just == juce::Justification::centredRight) box.setRight (p + 2.0f);
+                g.drawText (d.second, box, just, false);
+            }
+        }
+
+        // the lit part of the slot, from the origin to the setting
+        const float from = at (style.bipolar ? style.origin : slider.getMinimum());
+        g.setColour (accent.withAlpha (0.8f));
+        if (vertical) g.fillRect (juce::Rectangle<float> (slot.getX() + 1.0f, juce::jmin (from, sliderPos), 3.0f, std::abs (from - sliderPos)));
+        else          g.fillRect (juce::Rectangle<float> (juce::jmin (from, sliderPos), slot.getY() + 1.0f, std::abs (from - sliderPos), 3.0f));
+
+        // brass cap with grip grooves
+        auto cap = vertical ? juce::Rectangle<float> (30.0f, 15.0f).withCentre ({ slot.getCentreX(), sliderPos })
+                            : juce::Rectangle<float> (13.0f, 24.0f).withCentre ({ sliderPos, slot.getCentreY() });
+        g.setColour (juce::Colours::black.withAlpha (0.45f));
+        g.fillRoundedRectangle (cap.translated (0.0f, 2.0f), 2.5f);
+        g.setGradientFill (metal (col::gold, cap.getY(), cap.getBottom()));
+        g.fillRoundedRectangle (cap, 2.5f);
+        g.setColour (col::ink.withAlpha (0.75f));
+        g.drawRoundedRectangle (cap, 2.5f, 0.8f);
+        for (int k = -1; k <= 1; ++k)
+        {
+            g.setColour (col::ink.withAlpha (k == 0 ? 0.9f : 0.45f));
+            if (vertical) g.drawHorizontalLine (juce::roundToInt (cap.getCentreY()) + k * 3, cap.getX() + 4.0f, cap.getRight() - 4.0f);
+            else          g.drawVerticalLine (juce::roundToInt (cap.getCentreX()) + k * 3, cap.getY() + 4.0f, cap.getBottom() - 4.0f);
+        }
     }
 
     void drawComboBox (juce::Graphics& g, int w, int h, bool, int, int, int, int, juce::ComboBox& box) override
@@ -185,10 +419,13 @@ public:
 class Knob final : public juce::Component
 {
 public:
-    Knob (APVTS& state, const juce::String& paramId, const juce::String& caption, juce::Colour accent)
+    Knob (APVTS& state, const juce::String& paramId, const juce::String& caption, juce::Colour accent, ControlStyle style = {})
         : text (caption)
     {
-        slider.setSliderStyle (juce::Slider::RotaryHorizontalVerticalDrag);
+        slider.style = style;
+        slider.setSliderStyle (style.shape == ControlStyle::fader ? juce::Slider::LinearVertical
+                             : style.shape == ControlStyle::horizontal ? juce::Slider::LinearHorizontal
+                                                                       : juce::Slider::RotaryHorizontalVerticalDrag);
         slider.setTextBoxStyle (juce::Slider::NoTextBox, false, 0, 0);
         slider.setRotaryParameters (juce::MathConstants<float>::pi * 1.25f, juce::MathConstants<float>::pi * 2.75f, true);
         slider.setColour (juce::Slider::thumbColourId, accent);
@@ -200,26 +437,196 @@ public:
         setHelpId (*this, paramId);
     }
 
-    void resized() override     { slider.setBounds (getLocalBounds().withTrimmedBottom (15)); }
+    void resized() override
+    {
+        auto r = getLocalBounds().withTrimmedBottom (15);
+        if (slider.style.shape == ControlStyle::fader)              r = r.withSizeKeepingCentre (juce::jmin (70, r.getWidth()), r.getHeight() - 10);
+        else if (slider.style.shape == ControlStyle::horizontal)    r = r.withSizeKeepingCentre (r.getWidth() - 12, 44);
+        slider.setBounds (r);
+    }
 
     void paint (juce::Graphics& g) override
     {
         const bool active = slider.isMouseOverOrDragging();
         g.setFont (font (10.5f, true, active ? 0.0f : 0.08f));
         g.setColour (active ? col::cream : col::creamDim);
-        g.drawText (active ? slider.getTextFromValue (slider.getValue()) : text,
-                    getLocalBounds().removeFromBottom (15), juce::Justification::centred, false);
+        g.drawFittedText (active ? slider.getTextFromValue (slider.getValue()) : text,
+                          getLocalBounds().removeFromBottom (15), juce::Justification::centred, 1, 0.75f);
     }
 
     void mouseEnter (const juce::MouseEvent&) override  { repaint(); }
     void mouseExit (const juce::MouseEvent&) override   { repaint(); }
     void mouseUp (const juce::MouseEvent&) override     { repaint(); }
 
-    juce::Slider slider;
+    StyledSlider slider;
 
 private:
     juce::String text;
     std::unique_ptr<APVTS::SliderAttachment> attachment;
+};
+
+//==============================================================================
+/** A rotary selector for a choice parameter: a chicken-head pointer over the printed choices.
+    Click a legend to go straight to it; click the knob or drag to step through them. */
+class RotarySwitch final : public juce::Component
+{
+public:
+    RotarySwitch (APVTS& state, const juce::String& paramId, const juce::String& caption, juce::Colour accentColour, juce::StringArray shortNames = {})
+        : text (caption), accent (accentColour), param (*state.getParameter (paramId)),
+          attachment (param, [this] (float v) { index = juce::roundToInt (v); repaint(); })
+    {
+        if (auto* choice = dynamic_cast<juce::AudioParameterChoice*> (&param)) names = choice->choices;
+        if (shortNames.size() == names.size()) names = shortNames;
+        setHelpId (*this, paramId);
+        attachment.sendInitialUpdate();
+    }
+
+    void paint (juce::Graphics& g) override
+    {
+        const auto lay = layout();
+        g.setFont (legendFont());
+        for (int i = 0; i < names.size(); ++i)
+        {
+            const bool on = i == index;
+            const float a = angleOf (i);
+            g.setColour (on ? accent.brighter (0.4f) : col::creamDim.withAlpha (0.6f));
+            g.drawLine ({ lay.centre.getPointOnCircumference (lay.r + 2.0f, a), lay.centre.getPointOnCircumference (lay.r + (on ? 7.0f : 5.0f), a) }, on ? 1.6f : 1.0f);
+            g.setColour (on ? col::cream : col::creamDim);
+            g.drawText (names[i], lay.labels[(size_t) i], juce::Justification::centredLeft, false);
+        }
+        paintChickenHead (g, lay.centre, lay.r * 0.9f, angleOf (index));
+
+        g.setFont (font (10.5f, true, 0.08f));
+        g.setColour (col::creamDim);
+        g.drawFittedText (text, getLocalBounds().removeFromBottom (15), juce::Justification::centred, 1, 0.8f);
+    }
+
+    void mouseDown (const juce::MouseEvent& e) override
+    {
+        dragStart = e.position.y; startIndex = index; dragged = false;
+        const auto lay = layout();
+        for (int i = 0; i < names.size(); ++i)          // on a legend: go straight there
+            if (lay.labels[(size_t) i].expanded (2.0f, 2.0f).contains (e.position)) { choose (i); dragged = true; return; }
+    }
+
+    void mouseDrag (const juce::MouseEvent& e) override
+    {
+        const int steps = juce::roundToInt ((e.position.y - dragStart) / 16.0f);     // down the list, as the legends run
+        if (steps != 0) dragged = true;
+        choose (juce::jlimit (0, names.size() - 1, startIndex + steps));
+    }
+
+    void mouseUp (const juce::MouseEvent& e) override
+    {
+        if (! dragged && ! e.mouseWasDraggedSinceMouseDown())
+            choose (e.mods.isShiftDown() ? (index + names.size() - 1) % names.size() : (index + 1) % names.size());
+    }
+
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails& w) override
+    {
+        if (w.deltaY != 0.0f) choose (juce::jlimit (0, names.size() - 1, index + (w.deltaY > 0.0f ? -1 : 1)));
+    }
+
+private:
+    static juce::Font legendFont()      { return font (9.0f, true, 0.02f); }
+
+    struct Layout { juce::Point<float> centre; float r; std::vector<juce::Rectangle<float>> labels; };
+
+    /** The knob on the left, its legends stacked to its right, the whole group centred in the cell. */
+    Layout layout() const
+    {
+        auto area = getLocalBounds().withTrimmedBottom (15).toFloat().reduced (2.0f, 4.0f);
+        float widest = 0.0f;
+        for (auto& n : names) widest = juce::jmax (widest, juce::GlyphArrangement::getStringWidth (legendFont(), n));
+        const float r = juce::jlimit (9.0f, 17.0f, juce::jmin (area.getHeight() * 0.22f, (area.getWidth() - widest - 14.0f) * 0.5f));
+        const float reach = r + 10.0f;
+        const float groupW = 2.0f * r + 10.0f + widest;
+        Layout lay;
+        lay.r = r;
+        lay.centre = { area.getCentreX() - groupW * 0.5f + r, area.getCentreY() };
+        for (int i = 0; i < names.size(); ++i)
+        {
+            const auto tip = lay.centre.getPointOnCircumference (reach, angleOf (i));
+            lay.labels.push_back ({ juce::jmax (tip.x, lay.centre.x + r + 6.0f), tip.y - 6.0f, widest + 4.0f, 12.0f });
+        }
+        return lay;
+    }
+
+    /** The pointer swings across the right-hand side, from up-right to down-right. */
+    float angleOf (int i) const
+    {
+        const int n = juce::jmax (2, names.size());
+        const float spread = juce::degreesToRadians (n <= 3 ? 90.0f : 120.0f);
+        return juce::MathConstants<float>::halfPi - spread * 0.5f + spread * (float) i / (float) (n - 1);
+    }
+
+    void choose (int i)     { if (i != index) attachment.setValueAsCompleteGesture ((float) i); }
+
+    juce::String text;
+    juce::Colour accent;
+    juce::RangedAudioParameter& param;
+    juce::StringArray names;
+    int index = 0, startIndex = 0;
+    float dragStart = 0.0f;
+    bool dragged = false;
+    juce::ParameterAttachment attachment;
+};
+
+//==============================================================================
+/** A needle gain-reduction meter: the needle rests at 0 on the right and swings left as the gain comes down. */
+class NeedleMeter final : public juce::Component
+{
+public:
+    explicit NeedleMeter (float rangeDb) : range (rangeDb) {}
+
+    void set (float db)     { db = juce::jlimit (0.0f, range, db); if (std::abs (db - gr) > 0.02f) { gr = db; repaint(); } }
+
+    void paint (juce::Graphics& g) override
+    {
+        auto face = getLocalBounds().toFloat().reduced (4.0f, 6.0f);
+        g.setColour (juce::Colours::black.withAlpha (0.5f));
+        g.fillRoundedRectangle (face.expanded (2.0f), 5.0f);
+        g.setGradientFill (juce::ColourGradient (juce::Colour (0xfff3e9cb), face.getCentreX(), face.getBottom(),
+                                                 juce::Colour (0xffc9b98c), face.getX(), face.getY(), true));
+        g.fillRoundedRectangle (face, 4.0f);
+
+        juce::Graphics::ScopedSaveState save (g);
+        g.reduceClipRegion (face.toNearestInt());
+        const float sweep = juce::degreesToRadians (40.0f);
+        const float R = juce::jmin (face.getHeight() * 0.95f, (face.getWidth() * 0.5f - 18.0f) / std::sin (sweep));
+        const juce::Point<float> pivot (face.getCentreX(), face.getY() + R + 24.0f);
+        auto angleFor = [&] (float db) { return sweep - 2.0f * sweep * std::log10 (1.0f + db) / std::log10 (1.0f + range); };
+        const juce::Colour ink (0xff2a2520);
+
+        juce::Path arc;
+        arc.addCentredArc (pivot.x, pivot.y, R, R, 0.0f, angleFor (range), angleFor (0.0f), true);
+        g.setColour (ink);
+        g.strokePath (arc, juce::PathStrokeType (1.4f));
+        g.setFont (font (8.5f, true));
+        for (float m : { 0.0f, 1.0f, 2.0f, 3.0f, 5.0f, 7.0f, 10.0f, 20.0f })
+        {
+            if (m > range) continue;
+            const float a = angleFor (m);
+            g.drawLine ({ pivot.getPointOnCircumference (R, a), pivot.getPointOnCircumference (R + 6.0f, a) }, 1.2f);
+            g.drawText (juce::String ((int) m), juce::Rectangle<float> (20.0f, 11.0f).withCentre (pivot.getPointOnCircumference (R + 14.0f, a)),
+                        juce::Justification::centred, false);
+        }
+        g.setFont (font (8.0f, true, 0.2f));
+        g.setColour (ink.withAlpha (0.8f));
+        g.drawText ("GAIN REDUCTION  dB", juce::Rectangle<float> (face.getWidth(), 12.0f).withCentre ({ face.getCentreX(), pivot.y - R * 0.45f }), juce::Justification::centred, false);
+
+        const float a = angleFor (gr);
+        g.setColour (juce::Colours::black.withAlpha (0.18f));
+        g.drawLine ({ pivot.translated (2.0f, 3.0f), pivot.getPointOnCircumference (R + 3.0f, a).translated (2.0f, 3.0f) }, 1.8f);
+        g.setColour (juce::Colour (0xff151210));
+        g.drawLine ({ pivot, pivot.getPointOnCircumference (R + 3.0f, a) }, 1.4f);
+
+        g.setColour (juce::Colours::black.withAlpha (0.35f));
+        g.drawRoundedRectangle (face.reduced (0.5f), 4.0f, 1.6f);
+    }
+
+private:
+    float range, gr = 0.0f;
 };
 
 //==============================================================================
@@ -423,7 +830,7 @@ public:
         addAndMakeVisible (*power);
     }
 
-    void addCell (juce::Component* c)                   { cells.add (c); if (c != nullptr) addAndMakeVisible (c); }
+    void addCell (juce::Component* c, int span = 1)     { cells.add (c); spans.add (span); if (c != nullptr) addAndMakeVisible (c); }
     void addHeader (juce::Component* c, int width)      { headers.add ({ c, width }); addAndMakeVisible (c); }
     void enableGrMeter (float rangeDb, bool showValue = false)  { grRange = rangeDb; showGrValue = showValue; }
     void setGr (float db)                               { if (std::abs (db - gr) > 0.02f) { gr = db; repaint (grBounds().expanded (2)); } }
@@ -448,10 +855,10 @@ public:
         auto grid = getLocalBounds().reduced (pad, 0).withTrimmedTop (titleH + 4).withTrimmedBottom (grH + 8);
         const float cw = (float) grid.getWidth() / (float) cols, rh = (float) grid.getHeight() * 0.5f;
 
-        for (int i = 0; i < cells.size(); ++i)
+        for (int i = 0, slot = 0; i < cells.size(); slot += spans[i], ++i)
             if (auto* c = cells[i])
-                c->setBounds (juce::Rectangle<float> ((float) grid.getX() + cw * (float) (i % cols),
-                                                      (float) grid.getY() + rh * (float) (i / cols), cw, rh)
+                c->setBounds (juce::Rectangle<float> ((float) grid.getX() + cw * (float) (slot % cols),
+                                                      (float) grid.getY() + rh * (float) (slot / cols), cw * (float) spans[i], rh)
                                   .reduced (2.0f, 3.0f).toNearestInt());
     }
 
@@ -465,7 +872,11 @@ public:
         g.fillRect (juce::Rectangle<float> ((float) pad, (float) titleH - 1.5f, r.getWidth() - 2.0f * (float) pad, 1.5f));
         g.setColour (lit ? col::cream : col::creamDim.withAlpha (0.7f));
         g.setFont (font (12.5f, true, 0.16f));
-        g.drawText (title, pad + (power != nullptr ? 24 : 2), 0, getWidth(), titleH, juce::Justification::centredLeft, false);
+        // the title gives way to any header controls, tightening its letter-spacing rather than being cut off
+        int titleRight = getWidth() - pad;
+        for (auto& h : headers) if (h.comp->isVisible()) titleRight = juce::jmin (titleRight, h.comp->getX() - 4);
+        const int titleX = pad + (power != nullptr ? 24 : 2);
+        g.drawFittedText (title, titleX, 0, titleRight - titleX, titleH, juce::Justification::centredLeft, 1, 0.8f);
 
         if (grRange > 0.0f)
         {
@@ -510,6 +921,7 @@ private:
     juce::String title;
     std::unique_ptr<LedButton> power;
     juce::Array<juce::Component*> cells;
+    juce::Array<int> spans;
     juce::Array<Header> headers;
     bool showGrValue = false;
     float grRange = 0.0f, gr = 0.0f;

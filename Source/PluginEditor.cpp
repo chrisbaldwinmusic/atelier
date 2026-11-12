@@ -18,7 +18,7 @@ AtelierEditor::AtelierEditor (AtelierProcessor& p)
       tube    ("TUBE",       col::orange, 2),
       deEss   ("DE-ESS",     col::purple, 1),
       eq      ("EQUALISER",  col::blue,   6),
-      comp    ("COMPRESSOR", col::red,    4),
+      comp    ("COMPRESSOR", col::red,    5),
       tape    ("TAPE",       col::gold,   2),
       iron    ("IRON",       col::teal,   1),
       image   ("IMAGE",      col::purple, 1),
@@ -36,8 +36,11 @@ AtelierEditor::AtelierEditor (AtelierProcessor& p)
     content.addAndMakeVisible (guidePanel);
     content.addChildComponent (analyserPanel);
 
+    using CS = ControlStyle;
+    const auto hero = CS::make (CS::hero), small = CS::make (CS::small), trim = CS::make (CS::trim);
+
     // ---- INPUT ----
-    knob (input, "inGain", "GAIN");
+    knob (input, "inGain", "GAIN", [] { auto c = CS::centred(); c.size = CS::hero; return c; }());
     {
         auto* cell = new CaptionCell (std::make_unique<LedButton> (apvts, "phase", juce::String::fromUTF8 ("\xc3\x98"), col::ivory), "PHASE", 44, 26);
         owned.add (cell); input.addCell (cell);
@@ -47,7 +50,7 @@ AtelierEditor::AtelierEditor (AtelierProcessor& p)
 
     // ---- GATE ----
     gate.setPower (apvts, "gateOn");
-    knob (gate, "gateThr", "THRESHOLD");
+    knob (gate, "gateThr", "THRESHOLD", hero);
     knob (gate, "gateRange", "RANGE");
     knob (gate, "gateRel", "RELEASE");
     gateRead = readout (gate, "REDUCTION");
@@ -57,35 +60,35 @@ AtelierEditor::AtelierEditor (AtelierProcessor& p)
         owned.add (b); gate.addHeader (b, 44);
     }
 
-    // ---- TUBE ----
+    // ---- TUBE ----  (Bias is calibration: a trim pot)
     tube.setPower (apvts, "tubeOn");
-    knob (tube, "tubeDrive", "DRIVE");
-    knob (tube, "tubeBias", "BIAS");
-    combo (tube, "tubeType", "VALVE");
+    knob (tube, "tubeDrive", "DRIVE", hero);
+    knob (tube, "tubeBias", "BIAS", trim);
+    selector (tube, "tubeType", "VALVE", { "TRIODE", "PENTODE", "PUSH-PULL" });
     lamp = new TubeLamp();
     setHelpId (*lamp, "tubeOn");
     owned.add (lamp); tube.addCell (lamp);
 
     // ---- DE-ESS ----
     deEss.setPower (apvts, "dsOn");
-    knob (deEss, "dsFreq", "FREQ");
-    knob (deEss, "dsThr", "THRESHOLD");
+    knob (deEss, "dsFreq", "FREQ", small);
+    knob (deEss, "dsThr", "THRESHOLD", hero);
     deEss.enableGrMeter (12.0f);
 
-    // ---- EQ ----  (top row: gains, bottom row: frequencies; the two Qs share the middle column)
+    // ---- EQ ----  (top row: gains, cut or boost from the centre; bottom row: frequencies; the Qs share the middle column)
     eq.setPower (apvts, "eqOn");
-    knob (eq, "lfGain", "LOW");
-    knob (eq, "lmGain", "LO MID");
-    knob (eq, "lmQ", "LO MID Q");
-    knob (eq, "hmGain", "HI MID");
-    knob (eq, "hfGain", "HIGH");
+    knob (eq, "lfGain", "LOW", CS::centred());
+    knob (eq, "lmGain", "LO MID", CS::centred());
+    knob (eq, "lmQ", "LO MID Q", small);
+    knob (eq, "hmGain", "HI MID", CS::centred());
+    knob (eq, "hfGain", "HIGH", CS::centred());
     knob (eq, "airGain", "AIR");
-    knob (eq, "lfFreq", "FREQ");
-    knob (eq, "lmFreq", "FREQ");
-    knob (eq, "hmQ", "HI MID Q");
-    knob (eq, "hmFreq", "FREQ");
-    knob (eq, "hfFreq", "FREQ");
-    knob (eq, "airFreq", "FREQ");
+    knob (eq, "lfFreq", "FREQ", small);
+    knob (eq, "lmFreq", "FREQ", small);
+    knob (eq, "hmQ", "HI MID Q", small);
+    knob (eq, "hmFreq", "FREQ", small);
+    knob (eq, "hfFreq", "FREQ", small);
+    knob (eq, "airFreq", "FREQ", small);
     headerCombo (eq, "eqStyle", 86);
     eqMsBox = headerCombo (eq, "eqMS", 78);
     {
@@ -94,16 +97,20 @@ AtelierEditor::AtelierEditor (AtelierProcessor& p)
         owned.add (pre); eq.addHeader (pre, 40);
     }
 
-    // ---- COMPRESSOR ----
+    // ---- COMPRESSOR ----  (a needle meter, the threshold, ratio in steps, and the four designs on a selector)
     comp.setPower (apvts, "compOn");
-    knob (comp, "compThr", "THRESHOLD");
-    knob (comp, "compRatio", "RATIO");
+    compMeter = new NeedleMeter (20.0f);
+    setHelpId (*compMeter, "compOn");
+    owned.add (compMeter); comp.addCell (compMeter, 2);
+    knob (comp, "compThr", "THRESHOLD", hero);
+    knob (comp, "compRatio", "RATIO", CS::stepped ({ { 1.0, "1" }, { 1.5, "1.5" }, { 2.0, "2" }, { 3.0, "3" }, { 4.0, "4" },
+                                                      { 6.0, "6" }, { 10.0, "10" }, { 20.0, "20" } }));
+    selector (comp, "compModel", "MODEL", { "VCA", "FET", "OPTO", "V-MU" });
     knob (comp, "compAtt", "ATTACK");
     knob (comp, "compRel", "RELEASE");
     knob (comp, "compMakeup", "MAKEUP");
-    knob (comp, "compMix", "MIX");
-    knob (comp, "compSc", "SC HPF");
-    combo (comp, "compModel", "MODEL");
+    knob (comp, "compMix", "MIX", small);
+    knob (comp, "compSc", "SC HPF", trim);
     {
         auto* b = new LedButton (apvts, "compAuto", "AUTO REL", col::red);
         owned.add (b); comp.addHeader (b, 66);
@@ -112,36 +119,47 @@ AtelierEditor::AtelierEditor (AtelierProcessor& p)
         auto* b = new LedButton (apvts, "compExt", "EXT KEY", col::red);
         owned.add (b); comp.addHeader (b, 62);
     }
-    comp.enableGrMeter (20.0f);
 
-    // ---- TAPE ----
+    // ---- TAPE ----  (bias and head bump are alignment: trim pots)
     tape.setPower (apvts, "tapeOn");
-    knob (tape, "tapeDrive", "DRIVE");
-    knob (tape, "tapeBias", "BIAS");
-    knob (tape, "tapeBump", "HEAD BUMP");
-    combo (tape, "tapeSpeed", "SPEED", 78);
+    knob (tape, "tapeDrive", "DRIVE", hero);
+    knob (tape, "tapeBias", "BIAS", trim);
+    knob (tape, "tapeBump", "HEAD BUMP", trim);
+    selector (tape, "tapeSpeed", "SPEED", { juce::String::fromUTF8 ("7\xc2\xbd"), "15", "30" });
 
     // ---- IRON ----
     iron.setPower (apvts, "ironOn");
-    knob (iron, "ironDrive", "DRIVE");
-    combo (iron, "ironType", "CORE", 78);
+    knob (iron, "ironDrive", "DRIVE", hero);
+    selector (iron, "ironType", "CORE", { "STEEL", "NICKEL", "CONSOLE" });
 
-    // ---- IMAGE ----
+    // ---- IMAGE ----  (width reads as narrow to wide, with a detent at unchanged)
     image.setPower (apvts, "imgOn");
-    knob (image, "width", "WIDTH");
-    knob (image, "monoBass", "MONO BASS");
+    {
+        auto c = CS::centred (100.0);
+        c.shape = CS::horizontal; c.snapNear = 4.0;
+        c.detents = { { 0.0, "MONO" }, { 100.0, "" }, { 200.0, "WIDE" } };
+        knob (image, "width", "WIDTH", c);
+    }
+    knob (image, "monoBass", "MONO BASS", small);
 
     // ---- LIMITER ----
     limiter.setPower (apvts, "limOn");
-    knob (limiter, "limDrive", "DRIVE");
-    knob (limiter, "limCeil", "CEILING");
+    knob (limiter, "limDrive", "DRIVE", hero);
+    knob (limiter, "limCeil", "CEILING", CS::stepped ({ { -6.0, "-6" }, { -3.0, "-3" }, { -2.0, "" }, { -1.0, "-1" }, { -0.5, "" },
+                                                         { -0.3, "" }, { -0.1, "" }, { 0.0, "0" } }));
     knob (limiter, "limRel", "RELEASE");
-    knob (limiter, "limClip", "CLIP");
+    knob (limiter, "limClip", "CLIP", small);
     limiter.enableGrMeter (12.0f, true);
 
     // ---- OUTPUT ----
-    ditherBox = headerCombo (output, "dither", 84);
-    knob (output, "outGain", "TRIM");
+    ditherBox = headerCombo (output, "dither", 74);
+    {
+        // a short fader, as on a console channel, with a detent at unity
+        auto c = CS::centred();
+        c.shape = CS::fader; c.snapNear = 0.4;
+        c.detents = { { 24.0, "+24" }, { 12.0, "+12" }, { 0.0, "0" }, { -12.0, "-12" }, { -24.0, "-24" } };
+        knob (output, "outGain", "TRIM", c);
+    }
     {
         auto* cell = new CaptionCell (std::make_unique<LedButton> (apvts, "match", "=", col::ivory), "MATCH BYP", 44, 26);
         owned.add (cell); output.addCell (cell);
@@ -332,18 +350,18 @@ void AtelierEditor::loadPreset (const juce::File& file)
 }
 
 //==============================================================================
-void AtelierEditor::knob (Section& s, const char* paramId, const char* caption)
+void AtelierEditor::knob (Section& s, const char* paramId, const char* caption, ControlStyle style)
 {
-    auto* k = new Knob (apvts, paramId, caption, s.accent);
+    auto* k = new Knob (apvts, paramId, caption, s.accent, std::move (style));
     owned.add (k);
     s.addCell (k);
 }
 
-void AtelierEditor::combo (Section& s, const char* paramId, const char* caption, int width)
+void AtelierEditor::selector (Section& s, const char* paramId, const char* caption, juce::StringArray shortNames)
 {
-    auto* cell = new CaptionCell (makeCombo (apvts, paramId, comboAttachments), caption, width, 24);
-    owned.add (cell);
-    s.addCell (cell);
+    auto* sw = new RotarySwitch (apvts, paramId, caption, s.accent, std::move (shortNames));
+    owned.add (sw);
+    s.addCell (sw);
 }
 
 juce::ComboBox* AtelierEditor::headerCombo (Section& s, const char* paramId, int width)
@@ -566,7 +584,7 @@ void AtelierEditor::timerCallback()
     fall (heatDisp,   take (m.heat), 0.06f);
     fall (keyHold,    toDb (take (m.keyPeak)), 1.6f);
 
-    comp.setGr (grCompDisp);
+    compMeter->set (grCompDisp);
     gate.setGr (grGateDisp);
     deEss.setGr (grDsDisp);
     limiter.setGr (grLimDisp);

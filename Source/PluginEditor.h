@@ -49,8 +49,8 @@ private:
     void loadPreset (const juce::File&);
     void resetToInit();
 
-    void knob (Section&, const char* paramId, const char* caption);
-    void combo (Section&, const char* paramId, const char* caption, int width = 92);
+    void knob (Section&, const char* paramId, const char* caption, atelier::ui::ControlStyle style = {});
+    void selector (Section&, const char* paramId, const char* caption, juce::StringArray shortNames = {});
     juce::ComboBox* headerCombo (Section&, const char* paramId, int width);
     atelier::ui::Readout* readout (Section&, const char* caption);
 
@@ -66,6 +66,7 @@ private:
     atelier::ui::MeterPanel meterPanel;
     atelier::ui::GuidePanel guidePanel;
     atelier::ui::TubeLamp* lamp = nullptr;
+    atelier::ui::NeedleMeter* compMeter = nullptr;
     atelier::ui::Readout *gateRead = nullptr, *peakRead = nullptr;
     juce::ComboBox *eqMsBox = nullptr, *ditherBox = nullptr;
     float grClipDisp = 0.0f;
