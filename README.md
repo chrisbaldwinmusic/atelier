@@ -10,12 +10,12 @@ One strip, three calibrations:
 
 ## What's in it
 
-- **Tube** — triode, pentode and push-pull stages with adjustable bias (4x oversampled).
+- **Tube** — a 12AX7 triode stage, an EF86 pentode stage and a 12AU7 push-pull pair, each solved as a real circuit sample by sample and checked against ngspice; Bias sets the cathode resistor (4x oversampled).
 - **Tape** — Jiles-Atherton magnetic hysteresis with pre/de-emphasis, head bump and three speeds (8x oversampled).
 - **Iron** — steel, nickel and console output transformers that saturate on low-frequency flux first.
 - **Compressor** — four designs that differ in topology, not just timing: VCA, FET, Opto and Vari-Mu. External sidechain key, sidechain high-pass, parallel mix.
 - **EQ** — five bands, Modern or Vintage curves, mid/side on busses and masters, pre or post compressor.
-- **Gate and de-esser** on channels; **stereo image and look-ahead true-peak limiter** on busses and masters.
+- **Gate and de-esser** on channels; **stereo image, look-ahead true-peak limiter with a soft clipper ahead of it, and dither** (24 bit, 16 bit, 16 bit shaped) on busses and masters.
 - **Analyser** — input and output spectra with a draggable EQ curve, integrated loudness, loudness range, true peak and correlation.
 - **Guide** — explains whichever control is under the pointer, gives tips per instrument, bus and master style, comments live on what the strip is doing, and applies starting points fitted to the level that is playing.
 - **Workflow** — click-free switching of every module, low-latency tracking mode, level-matched bypass, delta listen, A/B, undo/redo, presets.
@@ -36,6 +36,8 @@ After installing, quit your DAW, run `killall -9 AudioComponentRegistrar`, and r
 ## Tests
 
 `Tests/Main.cpp` runs audio through the processor offline and checks latency and bypass nulling, harmonic and aliasing levels, compressor and limiter behaviour, true-peak and loudness metering, sidechain keying, click-free switching, starting points and CPU use, then renders screenshots of the interface.
+
+If ngspice is installed (at `~/Library/Caches/ngspice-44.2`, or wherever `NGSPICE` points), the valve circuits are also simulated in ngspice and compared sample for sample; otherwise that check is skipped.
 
 ## Status
 

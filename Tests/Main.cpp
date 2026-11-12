@@ -771,9 +771,67 @@ int main (int argc, char** argv)
         }
     }
 
-    if (want ("Valve circuit against ngspice"))
+    if (want ("Valve types"))
     {
-        std::cout << "Valve circuit against ngspice" << std::endl;
+        std::cout << "Valve types" << std::endl;
+        static const char* names[] = { "triode", "pentode", "push-pull" };
+        struct Reading { float fund, h2, h3; };
+        auto measure = [&] (int type, float level, float drive)
+        {
+            AtelierProcessor p;
+            p.setPlayConfigDetails (2, 2, sr, 512);
+            p.prepareToPlay (sr, 512);
+            setParam (p, "tubeType", (float) type); setParam (p, "tubeDrive", drive);
+            auto b = sine (2, len, sr, 1000.0, level);
+            run (p, b, 512);
+            const float f = toneDb (b, 24000, sr, 1000.0);
+            return Reading { f, toneDb (b, 24000, sr, 2000.0) - f, toneDb (b, 24000, sr, 3000.0) - f };
+        };
+
+        Reading gentle[3], hard[3];
+        for (int type = 0; type < 3; ++type)
+        {
+            gentle[type] = measure (type, -18.0f, 6.0f);
+            hard[type] = measure (type, -6.0f, 12.0f);
+            std::cout << "  " << names[type] << ": 0 VU at 6 dB of drive -> " << gentle[type].fund << " dB, H2 " << gentle[type].h2 << ", H3 " << gentle[type].h3
+                      << " dBc;  -6 dBFS at 12 dB -> " << hard[type].fund << " dB, H2 " << hard[type].h2 << ", H3 " << hard[type].h3 << " dBc" << std::endl;
+            check (std::abs (gentle[type].fund + 18.0f) < 0.5f, juce::String (names[type]) + " is at unity gain for a 0 VU signal");
+            check (hard[type].fund < -5.0f && hard[type].fund > -16.0f, juce::String (names[type]) + " saturates without gaining level");
+
+            AtelierProcessor p;
+            p.setPlayConfigDetails (2, 2, sr, 512);
+            p.prepareToPlay (sr, 512);
+            setParam (p, "tubeType", (float) type); setParam (p, "tubeDrive", 12.0f);
+            auto hi = sine (2, len, sr, 15000.0, -18.0f);
+            run (p, hi, 512);
+            const float alias = toneDb (hi, 24000, sr, 3000.0) - toneDb (hi, 24000, sr, 15000.0);
+            std::cout << "    15 kHz @ -18 dBFS: alias at 3 kHz " << alias << " dBc" << std::endl;
+            check (alias < -70.0f, juce::String (names[type]) + " aliasing is below -70 dBc at realistic HF level");
+
+            // Bias with nothing playing: the operating point moves a long way, and none of it should reach the output
+            p.prepareToPlay (sr, 512);
+            float thump = 0.0f;
+            for (int block = 0; block < 200; ++block)
+            {
+                if (block == 20) setParam (p, "tubeBias", 100.0f);
+                if (block == 100) setParam (p, "tubeBias", 0.0f);
+                juce::AudioBuffer<float> quiet (2, 512);
+                quiet.clear();
+                run (p, quiet, 512);
+                thump = std::max (thump, quiet.getMagnitude (0, 512));
+            }
+            std::cout << "    Bias swept end to end and back in silence: output peak " << juce::Decibels::gainToDecibels (thump, -200.0f) << " dBFS" << std::endl;
+            check (thump < 1.0e-4f, juce::String (names[type]) + " can be re-biased without a thump");
+        }
+        check (gentle[0].h2 > gentle[0].h3 + 10.0f, "the triode's colour is mostly 2nd harmonic");
+        // the pair is matched to 5 %, so a trace of 2nd harmonic survives the cancellation, as it does in hardware
+        check (gentle[2].h2 < gentle[0].h2 - 10.0f && hard[2].h3 > hard[2].h2 + 10.0f, "the push-pull pair cancels the 2nd harmonic and leaves the 3rd");
+        check (gentle[1].h2 < gentle[0].h2 && hard[1].h3 > hard[0].h3 + 6.0f, "the pentode is cleaner than the triode when driven gently and has more 3rd harmonic when pushed");
+    }
+
+    if (want ("Valve circuits against ngspice"))
+    {
+        std::cout << "Valve circuits against ngspice" << std::endl;
         juce::File ngspice (juce::SystemStats::getEnvironmentVariable ("NGSPICE", {}));
         const auto ngHome = juce::File::getSpecialLocation (juce::File::userHomeDirectory).getChildFile ("Library/Caches/ngspice-44.2");
         if (! ngspice.existsAsFile()) ngspice = ngHome.getChildFile ("bin/ngspice");
@@ -786,55 +844,91 @@ int main (int argc, char** argv)
         {
             const double osRate = 192000.0;
             const int total = (int) (0.3 * osRate), from = (int) (0.1 * osRate);
-            float worst = -200.0f;
-
-            for (double amp : { 0.05, 0.5, 2.0, 8.0 })
+            const juce::String grid = "Bg G K I=V(G,K)>0 ? pwr(V(G,K),1.5)/1300 : 0\n";
+            const juce::String triodeModel = juce::String (".subckt TRIODE P G K\n")
+                + "Bp P K I=V(E1)>0 ? 2*pwr(V(E1),1.4)/1060 : 0\n"
+                + "Be E1 0 V=V(P,K)/600*ln(1+exp(600*(1/100+V(G,K)/sqrt(300+V(P,K)*V(P,K)))))\n" + grid + ".ends\n";
+            const juce::String pentodeModel = juce::String (".subckt PENTODE P G K S\n")
+                + "Be E1 0 V=V(S,K)/222.06*ln(1+exp(222.06*(1/34.9+V(G,K)/V(S,K))))\n"
+                + "Bp P K I=(V(E1)>0 && V(P,K)>0) ? 2*pwr(V(E1),1.35)/2648.1*atan(V(P,K)/4.7) : 0\n"
+                + "Bs S K I=(V(G,K)+V(S,K)/34.9)>0 ? pwr(V(G,K)+V(S,K)/34.9,1.35)/4627 : 0\n" + grid + ".ends\n";
+            auto half = [&] (const char* name, double kg1)
             {
-                const auto deck = outDir.getChildFile ("triode.cir"), data = outDir.getChildFile ("triode.txt");
+                return juce::String (".subckt ") + name + " P G K\n"
+                    + "Bp P K I=V(E1)>0 ? 2*pwr(V(E1),1.3)/" + juce::String (kg1) + " : 0\n"
+                    + "Be E1 0 V=V(P,K)/84*ln(1+exp(84*(1/21.5+V(G,K)/sqrt(300+V(P,K)*V(P,K)))))\n" + grid + ".ends\n";
+            };
+
+            // each deck is the same circuit as the C++ model, part for part; AMP is the test tone's amplitude
+            const juce::String triodeDeck = triodeModel
+                + "Vb bp 0 250\nVin in 0 SIN(0 AMP 220)\n"
+                + "Cin in g1 47n\nRgl g1 0 1Meg\nRgs g1 g 33k\nX1 p g k TRIODE\n"
+                + "Rp bp p 100k\nRk k 0 1.5k\nCk k 0 22u\nCout p out 100n\nRl out 0 1Meg\n";
+            const juce::String pentodeDeck = pentodeModel
+                + "Vb bp 0 250\nVin in 0 SIN(0 AMP 220)\n"
+                + "Cin in g1 47n\nRgl g1 0 1Meg\nRgs g1 g 33k\nX1 p g k s PENTODE\n"
+                + "Rp bp p 220k\nRs bp s 1Meg\nCs s 0 100n\nRk k 0 2.2k\nCk k 0 22u\nCout p out 100n\nRl out 0 1Meg\n";
+            // the output transformer is ideal: each plate sits at the supply minus or plus the winding voltage,
+            // and the winding is driven by the difference between the two plate currents
+            const juce::String pairDeck = half ("HALFA", 1180.0) + half ("HALFB", 1180.0 * atelier::PushPullCircuit::mismatch)
+                + "Vin in 0 SIN(0 AMP 220)\nEinv inb 0 in 0 -1\n"
+                + "CinA in ja 47n\nRglA ja 0 470k\nRgsA ja ga 10k\nCinB inb jb 47n\nRglB jb 0 470k\nRgsB jb gb 10k\n"
+                + "B1 pax 0 V=250-V(out)\nVs1 pax pa 0\nB2 pbx 0 V=250+V(out)\nVs2 pbx pb 0\n"
+                + "XA pa ga k HALFA\nXB pb gb k HALFB\nRk k 0 820\nCk k 0 100u\n"
+                + "Bw 0 out I=I(Vs1)-I(Vs2)\nRh out 0 5k\nLh out 0 40\n";
+
+            auto reference = [&] (const juce::String& circuit, double amp)
+            {
+                const auto deck = outDir.getChildFile ("valve.cir"), data = outDir.getChildFile ("valve.txt");
                 data.deleteFile();
-                juce::String d;
-                d << "Common-cathode 12AX7 stage\n"
-                  << ".subckt TRIODE P G K\n"
-                  << "Bp P K I=V(E1)>0 ? 2*pwr(V(E1),1.4)/1060 : 0\n"
-                  << "Be E1 0 V=V(P,K)/600*ln(1+exp(600*(1/100+V(G,K)/sqrt(300+V(P,K)*V(P,K)))))\n"
-                  << "Bg G K I=V(G,K)>0 ? pwr(V(G,K),1.5)/1300 : 0\n"
-                  << ".ends\n"
-                  << "Vb bp 0 250\nVin in 0 SIN(0 " << amp << " 220)\n"
-                  << "Cin in g1 47n\nRgl g1 0 1Meg\nRgs g1 g 33k\nX1 p g k TRIODE\n"
-                  << "Rp bp p 100k\nRk k 0 1.5k\nCk k 0 22u\nCout p out 100n\nRl out 0 1Meg\n"
-                  << ".options reltol=1e-5\n"
-                  << ".control\ntran 5.2083333333u 0.3 0 2.6u\nlinearize v(out)\nwrdata triode.txt v(out)\n.endc\n.end\n";
-                deck.replaceWithText (d);
+                deck.replaceWithText ("Valve stage\n" + circuit.replace ("AMP", juce::String (amp))
+                                      + ".options reltol=1e-5\n.control\ntran 5.2083333333u 0.3 0 2.6u\nlinearize v(out)\nwrdata valve.txt v(out)\n.endc\n.end\n");
 
                 juce::ChildProcess proc;
                 // ngspice writes its data file relative to where it is run, and takes file names literally
                 juce::StringArray cmd { "/bin/sh", "-c", "cd " + outDir.getFullPathName().quoted() + " && SPICE_LIB_DIR="
                                                              + ngspice.getParentDirectory().getSiblingFile ("share/ngspice").getFullPathName().quoted()
-                                                             + " " + ngspice.getFullPathName().quoted() + " -b triode.cir > /dev/null 2>&1" };
-                const bool ran = proc.start (cmd) && proc.waitForProcessToFinish (120000);
-                juce::StringArray lines;
-                lines.addLines (data.loadFileAsString());
+                                                             + " " + ngspice.getFullPathName().quoted() + " -b valve.cir > /dev/null 2>&1" };
                 std::vector<double> ref;
-                for (const auto& line : lines)
+                if (proc.start (cmd) && proc.waitForProcessToFinish (120000))
                 {
-                    const auto parts = juce::StringArray::fromTokens (line.trim(), " \t", "");
-                    if (parts.size() >= 2) ref.push_back (parts[parts.size() - 1].getDoubleValue());
+                    juce::StringArray lines;
+                    lines.addLines (data.loadFileAsString());
+                    for (const auto& line : lines)
+                    {
+                        const auto parts = juce::StringArray::fromTokens (line.trim(), " \t", "");
+                        if (parts.size() >= 2) ref.push_back (parts[parts.size() - 1].getDoubleValue());
+                    }
                 }
-                if (! ran || (int) ref.size() < total - 2) { check (false, "ngspice produced a reference for " + juce::String (amp) + " V"); continue; }
+                return ref;
+            };
 
-                atelier::TubeCircuit t;
-                t.prepare (osRate);
-                double err = 0.0, sig = 0.0;
-                for (int i = 0; i < total - 2; ++i)
+            auto against = [&] (const char* name, const juce::String& circuit, std::initializer_list<double> amps, auto&& model)
+            {
+                float worst = -200.0f;
+                for (double amp : amps)
                 {
-                    const double y = t.processVolts (0, amp * std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * i / osRate));
-                    if (i >= from) { err += (y - ref[(size_t) i]) * (y - ref[(size_t) i]); sig += ref[(size_t) i] * ref[(size_t) i]; }
+                    const auto ref = reference (circuit, amp);
+                    if ((int) ref.size() < total - 2) { check (false, juce::String ("ngspice produced a reference for the ") + name + " at " + juce::String (amp) + " V"); continue; }
+
+                    model.prepare (osRate);
+                    double err = 0.0, sig = 0.0;
+                    for (int i = 0; i < total - 2; ++i)
+                    {
+                        const double y = model.processVolts (0, amp * std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * i / osRate));
+                        if (i >= from) { err += (y - ref[(size_t) i]) * (y - ref[(size_t) i]); sig += ref[(size_t) i] * ref[(size_t) i]; }
+                    }
+                    const float diff = (float) (10.0 * std::log10 (std::max (1.0e-30, err / sig)));
+                    worst = std::max (worst, diff);
+                    std::cout << "  " << name << ", " << amp << " V at the grid: difference from ngspice " << diff << " dB" << std::endl;
                 }
-                const float diff = (float) (10.0 * std::log10 (std::max (1.0e-30, err / sig)));
-                worst = std::max (worst, diff);
-                std::cout << "  " << amp << " V at the grid: difference from ngspice " << diff << " dB" << std::endl;
-            }
-            check (worst < -40.0f, "valve stage matches the ngspice simulation of the same circuit to better than -40 dB");
+                check (worst < -60.0f, juce::String (name) + " matches the ngspice simulation of the same circuit to better than -60 dB");
+            };
+
+            // from a whisper to several times what it takes to clip each stage
+            against ("triode", triodeDeck, { 0.05, 0.5, 2.0, 8.0 }, atelier::TubeCircuit());
+            against ("pentode", pentodeDeck, { 0.01, 0.1, 0.5, 2.0, 8.0 }, atelier::PentodeCircuit());
+            against ("push-pull pair", pairDeck, { 0.2, 2.0, 8.0, 20.0, 40.0 }, atelier::PushPullCircuit());
         }
 
         // behaviour a static curve cannot have: after a loud burst the bias has shifted and takes time to come back
@@ -945,19 +1039,31 @@ int main (int argc, char** argv)
     if (want ("CPU"))
     {
         std::cout << "CPU" << std::endl;
-        for (int mode = 0; mode < 3; ++mode)
+        auto cost = [&] (int mode, int valve)
         {
             AtelierProcessor p;
             p.setPlayConfigDetails (2, 2, sr, 256);
             p.prepareToPlay (sr, 256);
             allModulesOn (p);
-            setParam (p, "mode", (float) mode);
+            setParam (p, "mode", (float) mode); setParam (p, "tubeType", (float) valve);
             auto b = noise (2, (int) sr * 20, -12.0f, 5);
             const auto start = juce::Time::getMillisecondCounterHiRes();
             run (p, b, 256);
-            const double ms = juce::Time::getMillisecondCounterHiRes() - start;
-            std::cout << "  mode " << mode << ", every module on: " << ms / 200.0 << " % of one core at 48 kHz" << std::endl;
-            check (ms / 200.0 < 15.0, "CPU use is reasonable");
+            return (juce::Time::getMillisecondCounterHiRes() - start) / 200.0;
+        };
+        for (int mode = 0; mode < 3; ++mode)
+        {
+            const double percent = cost (mode, 0);
+            std::cout << "  mode " << mode << ", every module on: " << percent << " % of one core at 48 kHz" << std::endl;
+            check (percent < 15.0, "CPU use is reasonable");
+        }
+        // the pentode has a third electrode to solve for and the push-pull pair a second valve, so both cost more than the triode
+        static const char* valves[] = { "triode", "pentode", "push-pull" };
+        for (int valve = 1; valve < 3; ++valve)
+        {
+            const double percent = cost (0, valve);
+            std::cout << "  mode 0 with the " << valves[valve] << ": " << percent << " % of one core at 48 kHz" << std::endl;
+            check (percent < 18.0, juce::String ("CPU use is reasonable with the ") + valves[valve]);
         }
     }
 

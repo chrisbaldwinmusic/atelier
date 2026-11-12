@@ -4,6 +4,77 @@
 
 namespace atelier
 {
+namespace valve
+{
+/** ln(1 + e^a) and its slope, from a table: this sits in the innermost loop of every valve model, and the
+    exponential and logarithm it replaces were most of the cost. Cubic interpolation keeps the error around 1e-9. */
+struct SoftplusTable
+{
+    static constexpr int size = 4096;
+    static constexpr double lo = -32.0, hi = 32.0, step = (hi - lo) / size;
+    double value[size + 1], slope[size + 1];
+
+    SoftplusTable()
+    {
+        for (int i = 0; i <= size; ++i)
+        {
+            const double a = lo + step * i, e = std::exp (a);
+            value[i] = std::log1p (e);
+            slope[i] = e / (1.0 + e);
+        }
+    }
+};
+
+/** Built on first use: call it once from prepare(), never first from the audio thread. */
+inline const SoftplusTable& softplusTable()     { static const SoftplusTable t; return t; }
+
+inline void softplus (double a, double& L, double& sig) noexcept
+{
+    if (a >= SoftplusTable::hi)  { L = a; sig = 1.0; return; }
+    if (a <= SoftplusTable::lo)  { L = 0.0; sig = 0.0; return; }
+
+    const auto& t = softplusTable();
+    const double pos = (a - SoftplusTable::lo) / SoftplusTable::step;
+    const int i = std::min ((int) pos, SoftplusTable::size - 1);
+    const double x = pos - (double) i, x2 = x * x, x3 = x2 * x, h = SoftplusTable::step;
+
+    L = (2.0 * x3 - 3.0 * x2 + 1.0) * t.value[i] + (x3 - 2.0 * x2 + x) * h * t.slope[i]
+      + (-2.0 * x3 + 3.0 * x2) * t.value[i + 1] + (x3 - x2) * h * t.slope[i + 1];
+    sig = t.slope[i] + x * (t.slope[i + 1] - t.slope[i]);
+}
+
+/** A triode in Koren's model: plate current, grid current, and their slopes. */
+struct Triode
+{
+    double mu, ex, kg1, kp, kvb, gridK;
+
+    inline void currents (double vgk, double vpk, double& ip, double& ig, double& dIpG, double& dIpP, double& dIg) const noexcept
+    {
+        const double root = std::sqrt (kvb + vpk * vpk);
+        const double a = kp * (1.0 / mu + vgk / root);
+        double L, sig;
+        softplus (a, L, sig);
+
+        const double e1 = vpk / kp * L;
+        if (e1 > 0.0)
+        {
+            const double pw = (double) std::pow ((float) e1, (float) (ex - 1.0));     // single precision is ample here
+            ip = 2.0 * pw * e1 / kg1;
+            const double dIpE = 2.0 * ex * pw / kg1;
+            dIpG = dIpE * (vpk * sig / root);
+            dIpP = dIpE * (L / kp - sig * vgk * vpk * vpk / (root * root * root));
+        }
+        else { ip = dIpG = dIpP = 0.0; }
+
+        if (vgk > 0.0)  { const double r = std::sqrt (vgk); ig = vgk * r / gridK; dIg = 1.5 * r / gridK; }
+        else            { ig = dIg = 0.0; }
+    }
+};
+
+constexpr Triode ecc83  { 100.0, 1.4, 1060.0, 600.0, 300.0, 1300.0 };      // 12AX7
+constexpr Triode ecc82  { 21.5, 1.3, 1180.0, 84.0, 300.0, 1300.0 };        // 12AU7
+} // namespace valve
+
 /** A real valve gain stage, solved as a circuit rather than drawn as a curve.
 
         in --Cin--+--Rgs-- grid         B+ --Rp--+-- plate --Cout--+-- out
@@ -27,13 +98,11 @@ struct TubeCircuit
     // component values
     static constexpr double supply = 250.0, Rp = 100.0e3, Cin = 47.0e-9, Rgl = 1.0e6, Rgs = 33.0e3;
     static constexpr double Ck = 22.0e-6, Cout = 100.0e-9, Rload = 1.0e6;
-    // 12AX7
-    static constexpr double mu = 100.0, ex = 1.4, kg1 = 1060.0, kp = 600.0, kvb = 300.0, gridK = 1300.0;
 
     void prepare (double sampleRate)
     {
         T = 1.0 / sampleRate;
-        table();        // built here, never on the audio thread
+        valve::softplusTable();     // built here, never on the audio thread
         Rk = -1.0;
         setCathodeResistor (1500.0);
         reset();
@@ -149,63 +218,9 @@ struct TubeCircuit
     }
 
 private:
-    /** Koren triode plate current, grid current, and their slopes. */
     static inline void currents (double vgk, double vpk, double& ip, double& ig, double& dIpG, double& dIpP, double& dIg) noexcept
     {
-        const double root = std::sqrt (kvb + vpk * vpk);
-        const double a = kp * (1.0 / mu + vgk / root);
-        double L, sig;
-        softplus (a, L, sig);
-
-        const double e1 = vpk / kp * L;
-        if (e1 > 0.0)
-        {
-            const double pw = (double) std::pow ((float) e1, (float) (ex - 1.0));     // single precision is ample here
-            ip = 2.0 * pw * e1 / kg1;
-            const double dIpE = 2.0 * ex * pw / kg1;
-            dIpG = dIpE * (vpk * sig / root);
-            dIpP = dIpE * (L / kp - sig * vgk * vpk * vpk / (root * root * root));
-        }
-        else { ip = dIpG = dIpP = 0.0; }
-
-        if (vgk > 0.0)  { const double r = std::sqrt (vgk); ig = vgk * r / gridK; dIg = 1.5 * r / gridK; }
-        else            { ig = dIg = 0.0; }
-    }
-
-    /** ln(1 + e^a) and its slope, from a table: this sits in the innermost loop, and the exponential and
-        logarithm it replaces were most of the cost. Cubic interpolation keeps the error around 1e-9. */
-    struct SoftplusTable
-    {
-        static constexpr int size = 4096;
-        static constexpr double lo = -32.0, hi = 32.0, step = (hi - lo) / size;
-        double value[size + 1], slope[size + 1];
-
-        SoftplusTable()
-        {
-            for (int i = 0; i <= size; ++i)
-            {
-                const double a = lo + step * i, e = std::exp (a);
-                value[i] = std::log1p (e);
-                slope[i] = e / (1.0 + e);
-            }
-        }
-    };
-
-    static const SoftplusTable& table()     { static const SoftplusTable t; return t; }
-
-    static inline void softplus (double a, double& L, double& sig) noexcept
-    {
-        if (a >= SoftplusTable::hi)  { L = a; sig = 1.0; return; }
-        if (a <= SoftplusTable::lo)  { L = 0.0; sig = 0.0; return; }
-
-        const auto& t = table();
-        const double pos = (a - SoftplusTable::lo) / SoftplusTable::step;
-        const int i = std::min ((int) pos, SoftplusTable::size - 1);
-        const double x = pos - (double) i, x2 = x * x, x3 = x2 * x, h = SoftplusTable::step;
-
-        L = (2.0 * x3 - 3.0 * x2 + 1.0) * t.value[i] + (x3 - 2.0 * x2 + x) * h * t.slope[i]
-          + (-2.0 * x3 + 3.0 * x2) * t.value[i + 1] + (x3 - x2) * h * t.slope[i + 1];
-        sig = t.slope[i] + x * (t.slope[i + 1] - t.slope[i]);
+        valve::ecc83.currents (vgk, vpk, ip, ig, dIpG, dIpP, dIg);
     }
 
     /** Reduces the linear part of the circuit for the current sample rate and cathode resistor. */
@@ -273,8 +288,19 @@ private:
             (ip > mid ? lo : hi) = mid;
         }
         const double i0 = 0.5 * (lo + hi);
-        restVk = Rk * i0;
-        restVp = supply - Rp * i0;
+        const double movedK = Rk * i0 - restVk, movedP = supply - Rp * i0 - restVp;
+        restVk += movedK;
+        restVp += movedP;
+
+        // Carry whatever is playing across to the new operating point. Left alone, the capacitors would take
+        // their time finding it, and turning Bias would put a large subsonic thump on the output.
+        for (auto& s : st)
+        {
+            s.hK += gcK * movedK;
+            s.hO += gcO * movedP;
+            s.egk -= movedK; s.epk += movedP - movedK;
+            currents (s.egk, s.epk, s.ip, s.ig, s.dIpG, s.dIpP, s.dIg);
+        }
 
         double ip, ig, gm, gp, dIg;
         currents (-restVk, restVp - restVk, ip, ig, gm, gp, dIg);

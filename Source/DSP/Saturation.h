@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Common.h"
-#include "TubeCircuit.h"
+#include "ValveCircuits.h"
 
 /*  Analog colour stages. All of these are designed to run at the oversampled rate.
     Each stage is normalised to unity small-signal gain: turning up the drive pushes
@@ -10,74 +10,62 @@
 namespace atelier
 {
 //==============================================================================
-/** Valve preamp stage.
-    Triode is a real 12AX7 gain stage solved as a circuit (see TubeCircuit.h) and checked
-    against ngspice. Pentode and Push-Pull are still transfer curves with an adjustable bias point. */
+/** Valve preamp stage. Each type is a real circuit, solved sample by sample and checked against ngspice:
+    a 12AX7 triode stage (TubeCircuit.h), an EF86 pentode stage and a 12AU7 push-pull pair (ValveCircuits.h).
+    Bias sets the cathode resistor, which is how the operating point of each of them is set in hardware. */
 struct TubeStage
 {
     enum Type { triode = 0, pentode, pushPull };
 
-    void prepare (double osRate)    { dc.setCutoff (osRate, 8.0); dc.reset(); circuit.prepare (osRate); }
-    void reset() noexcept           { dc.reset(); circuit.reset(); }
+    void prepare (double osRate)    { tri.prepare (osRate); pent.prepare (osRate); pair.prepare (osRate); }
+    void reset() noexcept           { tri.reset(); pent.reset(); pair.reset(); }
 
     /** @param headroom  mode-dependent calibration (1 = channel, lower = cleaner). */
     void set (int newType, float driveDb, float bias01, float headroom) noexcept
     {
-        type   = newType;
-        drive  = dbToGain (driveDb) * headroom;
+        type  = newType;
+        drive = dbToGain (driveDb) * headroom;
 
-        if (type == triode)
-        {
-            // Bias chooses the cathode resistor, 600 ohms (hot, open) to 6k (cold, lopsided); 40 % is the textbook 1.5k.
-            // Full scale at 0 dB of drive puts 0.2 V on the grid, so a 0 VU signal sits where the stage is just colouring.
-            circuit.setCathodeResistor (600.0 * std::pow (10.0, (double) std::clamp (bias01, 0.0f, 1.0f)));
-            circuit.setInputScale (0.2 * (double) drive);
-            return;
-        }
-
-        offset = bias01 * (type == pushPull ? 0.15f : (type == pentode ? 0.35f : 0.5f));
-        s0     = shape (offset);
-        const float slope = (shape (offset + 1.0e-3f) - shape (offset - 1.0e-3f)) / 2.0e-3f;
-        norm   = 1.0f / (slope * drive);
-    }
-
-    inline float shape (float u) const noexcept
-    {
+        // Bias sweeps the cathode resistor over a decade, hot to cold, with the textbook value a little below half way.
+        // The input scale is the voltage a full-scale sample puts on the grid at 0 dB of drive, chosen so that a
+        // 0 VU signal sits where each stage is just colouring.
+        const double decade = std::pow (10.0, (double) std::clamp (bias01, 0.0f, 1.0f));
         switch (type)
         {
-            case pentode:   { const float u2 = u * u; return u / std::sqrt (std::sqrt (1.0f + u2 * u2)); }
-            case pushPull:  return std::tanh (u);
-            default:        return u >= 0.0f ? std::tanh (u)             // grid-conduction side
-                                             : u / (1.0f - 0.5f * u);    // soft cut-off side
+            case pentode:   pent.setCathodeResistor (1000.0 * decade);  pent.setInputScale (0.06 * (double) drive);  break;
+            case pushPull:  pair.setCathodeResistor (330.0 * decade);   pair.setInputScale (6.0 * (double) drive);   break;
+            default:        tri.setCathodeResistor (600.0 * decade);    tri.setInputScale (0.2 * (double) drive);    break;
         }
     }
 
     void process (float* l, float* r, int n) noexcept
     {
-        if (type == triode)
+        // Left and right are worked through together, a sample of each in turn. Each channel's solve has to
+        // wait for its own previous sample, but the two are independent, so the processor can overlap them.
+        switch (type)
         {
-            // Left and right are worked through together, a sample of each in turn. Each channel's solve has to
-            // wait for its own previous sample, but the two are independent, so the processor can overlap them.
-            for (int i = 0; i < n; ++i)
-            {
-                l[i] = circuit.process (0, l[i]);
-                r[i] = circuit.process (1, r[i]);
-            }
-            return;
-        }
-
-        float* chans[2] = { l, r };
-        for (int ch = 0; ch < 2; ++ch)
-        {
-            float* x = chans[ch];
-            for (int i = 0; i < n; ++i) x[i] = dc.hp (ch, (shape (drive * x[i] + offset) - s0) * norm);
+            case pentode:   run (pent, l, r, n);  break;
+            case pushPull:  run (pair, l, r, n);  break;
+            default:        run (tri, l, r, n);   break;
         }
     }
 
-    TubeCircuit circuit;
+    TubeCircuit tri;
+    PentodeCircuit pent;
+    PushPullCircuit pair;
     int type = triode;
-    float drive = 1.0f, offset = 0.0f, s0 = 0.0f, norm = 1.0f;
-    OnePole dc;
+    float drive = 1.0f;
+
+private:
+    template <typename Circuit>
+    static void run (Circuit& c, float* l, float* r, int n) noexcept
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            l[i] = c.process (0, l[i]);
+            r[i] = c.process (1, r[i]);
+        }
+    }
 };
 
 //==============================================================================
