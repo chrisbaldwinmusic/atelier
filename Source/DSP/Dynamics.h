@@ -3,6 +3,7 @@
 #include "Common.h"
 #include "ValveCircuits.h"
 #include "OptoCircuit.h"
+#include "FetCircuit.h"
 
 namespace atelier
 {
@@ -117,7 +118,8 @@ struct DeEsser
 
     VCA      feed-forward, RMS detector, firm knee, no added colour. Precise and punchy.
     FET      feedback (the detector listens to its own output), peak detector, very fast.
-             The gain element distorts more the harder it works, as a FET does.
+             The gain element is a real junction FET (FetCircuit): clean once it is well on, gritty
+             on loud material right where it starts to bite.
     Opto     feed-forward into a real light panel and photoresistive cell (OptoCell): the cell sets
              the timing, quick to let go from heavy reduction, then slower and slower, and slower
              still after long, heavy passages. Valve make-up stage adds a constant touch of 2nd harmonic.
@@ -143,13 +145,15 @@ struct Compressor
         valves.prepare (sr);
         valves.setInputScale (4.0);         // a full-scale sample puts 4 V on each grid; see Vari-Mu below
         cell.prepare (sr);
+        fetCell.setInputScale (0.2);        // a full-scale sample puts 200 mV across the divider; see FET below
+        fetCell.prepare (sr);
         voltsPerDb = valves.controlFor (10.0) / 10.0;
         reset();
     }
 
     void reset() noexcept
     {
-        scFilter.reset(); dc.reset(); valves.reset(); cell.reset();
+        scFilter.reset(); dc.reset(); valves.reset(); cell.reset(); fetCell.reset();
         ms = 0.0f; envFast = envSlow = 0.0f; fb[0] = fb[1] = 0.0f;
     }
 
@@ -157,14 +161,15 @@ struct Compressor
     {
         float a = p.attackMs, r = p.releaseMs, rmsMs = 0.0f;
         const float ratio = std::max (1.0f, p.ratio);
-        c2 = c3 = c2gr = c3gr = 0.0f;
+        c2 = c3 = 0.0f;
 
         switch (p.model)
         {
             case fet:
+                // The gain element is a real junction FET shunting the signal (FetCircuit). The side chain turns
+                // the reduction it wants into a voltage on the FET's gate; the colour is the FET's own.
                 feedback = true;  release = single;
                 a = std::max (0.02f, a * 0.1f);             knee = 2.0f;  rmsMs = 0.0f;
-                c2gr = 0.06f; c3gr = -0.50f;
                 break;
             case opto:
                 // The gain element is a real light panel and photoresistive cell (OptoCell). The side chain only
@@ -194,9 +199,10 @@ struct Compressor
         if (p.external) feedback = false;
 
         if (p.autoRelease && release == single && p.model != opto) release = programme;     // the cell is programme-dependent already
-        coloured = p.model == fet || p.model == opto;
+        coloured = p.model == opto;
         valveGain = p.model == variMu;
         optoGain = p.model == opto;
+        fetGain = p.model == fet;
         knee += p.extraKnee;
         usesRms = rmsMs > 0.0f;
         rmsCoef = usesRms ? msToCoef (rmsMs, sr) : 1.0f;
@@ -280,6 +286,12 @@ struct Compressor
                 wr = valves.process (1, inR, control);
                 gr = (float) valves.reduction (control);       // what the valves actually take off, for the meter
             }
+            else if (fetGain)
+            {
+                const double gate = FetCircuit::gateFor ((double) gr);
+                wl = fetCell.process (0, inL, gate);
+                wr = fetCell.process (1, inR, gate);
+            }
             else if (optoGain)
             {
                 cell.step (OptoCell::voltsFor ((double) gr));
@@ -296,11 +308,10 @@ struct Compressor
 
             if (coloured)
             {
-                const float d = std::min (1.0f, gr * (1.0f / 12.0f));
-                const float a2 = c2 + c2gr * d, a3 = c3 + c3gr * d;
+                // the opto's valve make-up stage: a constant touch of 2nd harmonic
                 const float xl = std::clamp (wl, -1.5f, 1.5f), xr = std::clamp (wr, -1.5f, 1.5f);
-                wl = dc.hp (0, wl + xl * xl * (a2 + a3 * xl));
-                wr = dc.hp (1, wr + xr * xr * (a2 + a3 * xr));
+                wl = dc.hp (0, wl + xl * xl * (c2 + c3 * xl));
+                wr = dc.hp (1, wr + xr * xr * (c2 + c3 * xr));
             }
 
             l[i] = inL + mix * (wl * makeup - inL);
@@ -316,13 +327,14 @@ struct Compressor
     Biquad scFilter;
     OnePole dc;
     Release release = single;
-    bool useSc = false, usesRms = false, feedback = false, coloured = false, valveGain = false, optoGain = false;
+    bool useSc = false, usesRms = false, feedback = false, coloured = false, valveGain = false, optoGain = false, fetGain = false;
     VariMuCircuit valves;
     OptoCell cell;
+    FetCircuit fetCell;
     double voltsPerDb = 1.6;
     float thr = -18.0f, slope = 0.75f, knee = 3.0f, makeup = 1.0f, mix = 1.0f;
     float attFast = 0.01f, relFast = 0.001f, attSlow = 0.001f, relSlow = 0.0001f, rmsCoef = 1.0f;
-    float c2 = 0.0f, c3 = 0.0f, c2gr = 0.0f, c3gr = 0.0f;
+    float c2 = 0.0f, c3 = 0.0f;
     float ms = 0.0f, envFast = 0.0f, envSlow = 0.0f, fb[2] {};
 };
 

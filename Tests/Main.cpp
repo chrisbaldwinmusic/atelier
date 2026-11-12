@@ -310,6 +310,29 @@ int main (int argc, char** argv)
         std::cout << "  gain swinging 25 dB in 1 ms: below 20 Hz, vari-mu " << muBursts.out << " dBFS, VCA " << vcaBursts.out << " dBFS" << std::endl;
         check (muBursts.out < vcaBursts.out + 6.0f && muBursts.out < -50.0f, "the vari-mu's valve pair is balanced: fast gain changes don't thump");
 
+        // The FET's colour is its channel's: loud material just engaging it saturates the channel, heavy reduction
+        // turns the FET on so far that it is clean again
+        auto fetAt = [&] (float thresholdDb)
+        {
+            AtelierProcessor p;
+            p.setPlayConfigDetails (2, 2, sr, 512);
+            p.prepareToPlay (sr, 512);
+            setParam (p, "tubeOn", 0.0f);
+            setParam (p, "compOn", 1.0f); setParam (p, "compModel", 1.0f);
+            setParam (p, "compThr", thresholdDb); setParam (p, "compRatio", 4.0f);
+            auto b = sine (2, len, sr, 1000.0, -3.0f);
+            run (p, b, 512);
+            const float f = toneDb (b, 24000, sr, 1000.0);
+            return std::pair<float, float> { -3.0f - f, toneDb (b, 24000, sr, 3000.0) - f };
+        };
+        const auto fetLight = fetAt (-6.0f), fetHeavy = fetAt (-36.0f);
+        const Reading fetBursts = measure (1, -9.0f, true);
+        std::cout << "  FET, -3 dBFS sine: " << fetLight.first << " dB reduction, H3 " << fetLight.second << " dBc; "
+                  << fetHeavy.first << " dB reduction, H3 " << fetHeavy.second << " dBc" << std::endl;
+        std::cout << "  gain swinging 25 dB in 1 ms: below 20 Hz, FET " << fetBursts.out << " dBFS" << std::endl;
+        check (fetLight.second > -50.0f && fetHeavy.second < fetLight.second - 20.0f, "the FET colours loud material as it starts to bite, and cleans up when it is turned on hard");
+        check (fetBursts.out < -40.0f, "the FET's control voltage barely reaches the audio when the gain moves fast");
+
         // The opto's timing comes from its light-dependent cell: held at a reduction, then left in the dark
         struct Opto { double attack90, releaseHalf, after3s; };
         auto opto = [&] (double grDb, double hold, double attackScale = 1.0, double releaseScale = 1.0)
@@ -1194,6 +1217,74 @@ int main (int argc, char** argv)
             }
 
             {
+                // The FET gain cell against ngspice's own JFET model: held at light, medium and heavy reduction with
+                // a signal from small to well into the channel's saturation, and with the control swinging fast.
+                using FC = atelier::FetCircuit;
+                const double rate = 48000.0, length = 0.2;
+                struct Case { double amp; juce::String control; std::function<double (double)> at; juce::String what; };
+                std::vector<Case> cases;
+                for (double gr : { 6.0, 15.0, 30.0 })
+                    for (double amp : { 0.05, 0.3, 1.0 })
+                    {
+                        const double v = FC::gateFor (gr);
+                        cases.push_back ({ amp, "DC " + juce::String (v, 12), [v] (double) { return v; }, juce::String (gr) + " dB, " + juce::String (amp) + " V" });
+                    }
+                const double v0 = FC::restGate, v1 = FC::gateFor (25.0);
+                cases.push_back ({ 0.5, "PWL(0 " + juce::String (v0, 12) + " 0.05 " + juce::String (v0, 12) + " 0.0505 " + juce::String (v1, 12) + " 0.12 "
+                                        + juce::String (v1, 12) + " 0.1205 " + juce::String (v0, 12) + ")",
+                                  [v0, v1] (double t) { return t < 0.05 ? v0 : t < 0.0505 ? v0 + (v1 - v0) * (t - 0.05) / 0.0005 : t < 0.12 ? v1
+                                                             : t < 0.1205 ? v1 + (v0 - v1) * (t - 0.12) / 0.0005 : v0; },
+                                  "control swinging to 25 dB in 0.5 ms, 0.5 V" });
+                float worst = -200.0f;
+                for (const auto& c : cases)
+                {
+                    const auto deck = outDir.getChildFile ("fet.cir"), data = outDir.getChildFile ("fet.txt");
+                    data.deleteFile();
+                    auto num = [] (double v) { return juce::String (v, 12); };
+                    deck.replaceWithText (juce::String ("FET gain cell\n")
+                        + "Vin in 0 SIN(0 " + juce::String (c.amp) + " 220)\nVc c 0 " + c.control + "\n"
+                        + "Rs in d " + num (FC::Rs) + "\nCf d m " + num (FC::Cf) + "\nRf m g " + num (FC::Rf) + "\nRc c g " + num (FC::Rc) + "\n"
+                        + "J1 d g 0 JM\n.model JM NJF(Beta=" + num (FC::beta) + " Vto=" + num (FC::vto) + " Lambda=" + num (FC::lambda) + ")\n"
+                        // ngspice's gmin, a conductance it adds across every junction to help it converge, would leak
+                        // a few picoamps through the 10 M gate resistors; the junction's own leakage is kept
+                        + ".options gmin=1e-20 reltol=1e-7 abstol=1e-15 vntol=1e-9\n.control\ntran " + juce::String (1.0 / rate, 15) + " " + juce::String (length)
+                        + " 0 " + juce::String (0.5 / rate, 15) + "\nlinearize v(d)\nwrdata fet.txt v(d)\n.endc\n.end\n");
+                    juce::ChildProcess proc;
+                    juce::StringArray cmd { "/bin/sh", "-c", "cd " + outDir.getFullPathName().quoted() + " && SPICE_LIB_DIR="
+                                                                 + ngspice.getParentDirectory().getSiblingFile ("share/ngspice").getFullPathName().quoted()
+                                                                 + " " + ngspice.getFullPathName().quoted() + " -b fet.cir > /dev/null 2>&1" };
+                    std::vector<double> ref;
+                    if (proc.start (cmd) && proc.waitForProcessToFinish (120000))
+                    {
+                        juce::StringArray lines;
+                        lines.addLines (data.loadFileAsString());
+                        for (const auto& line : lines)
+                        {
+                            const auto parts = juce::StringArray::fromTokens (line.trim(), " \t", "");
+                            if (parts.size() >= 2) ref.push_back (parts[parts.size() - 1].getDoubleValue());
+                        }
+                    }
+                    const int n = (int) (length * rate) - 2;
+                    if ((int) ref.size() < n) { check (false, "ngspice produced a reference for the FET gain cell, " + c.what); continue; }
+
+                    FC f;
+                    f.prepare (rate);
+                    f.reset (c.at (0.0));
+                    double err = 0.0, sig = 0.0;
+                    for (int i = 0; i < n; ++i)
+                    {
+                        const double t = i / rate;
+                        const double y = f.processVolts (0, c.amp * std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * t), c.at (t));
+                        err += (y - ref[(size_t) i]) * (y - ref[(size_t) i]); sig += ref[(size_t) i] * ref[(size_t) i];
+                    }
+                    const float diff = (float) (10.0 * std::log10 (std::max (1.0e-30, err / sig)));
+                    worst = std::max (worst, diff);
+                    std::cout << "  FET gain cell, " << c.what << ": difference from ngspice " << diff << " dB" << std::endl;
+                }
+                check (worst < -60.0f, "the FET gain cell matches ngspice's own JFET to better than -60 dB");
+            }
+
+            {
                 // The output transformers at the rate they run at, from quiet to well into saturation, at 40 Hz
                 // (where the core saturates) and 1 kHz (where leakage and winding capacitance start to matter).
                 using IC = atelier::IronCircuit;
@@ -1411,6 +1502,11 @@ int main (int argc, char** argv)
             const double percent = cost (1, 0, 2);
             std::cout << "  mode 1 with the Opto compressor: " << percent << " % of one core at 48 kHz" << std::endl;
             check (percent < 15.0, "CPU use is reasonable with the Opto compressor");
+        }
+        {
+            const double percent = cost (1, 0, 1);
+            std::cout << "  mode 1 with the FET compressor: " << percent << " % of one core at 48 kHz" << std::endl;
+            check (percent < 15.0, "CPU use is reasonable with the FET compressor");
         }
         // the pentode has a third electrode to solve for and the push-pull pair a second valve, so both cost more than the triode
         static const char* valves[] = { "triode", "pentode", "push-pull" };
