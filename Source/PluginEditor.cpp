@@ -494,17 +494,31 @@ void AtelierEditor::paint (juce::Graphics& g)   { g.fillAll (col::faceplate); }
 void AtelierEditor::Content::paint (juce::Graphics& g)
 {
     auto r = getLocalBounds().toFloat();
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff222327), 0.0f, 0.0f, juce::Colour (0xff111214), 0.0f, r.getBottom(), false));
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff25221e), 0.0f, 0.0f, juce::Colour (0xff11100e), 0.0f, r.getBottom(), false));
     g.fillAll();
 
-    g.setColour (juce::Colours::white.withAlpha (0.012f));
-    for (int y = 0; y < getHeight(); y += 3)
+    // brushed finish: fine horizontal grain, and a broad soft sheen across the middle of the plate
+    g.setColour (col::goldLight.withAlpha (0.016f));
+    for (int y = 0; y < getHeight(); y += 2)
         g.drawHorizontalLine (y, 0.0f, r.getRight());
+    {
+        juce::ColourGradient sheen (juce::Colours::transparentBlack, 0.0f, 0.0f, juce::Colours::transparentBlack, r.getRight(), 0.0f, false);
+        sheen.addColour (0.45, col::gold.withAlpha (0.045f));
+        g.setGradientFill (sheen);
+        g.fillAll();
+    }
 
-    g.setColour (col::cream);
-    g.setFont (font (30.0f, true, 0.32f));
-    g.drawText ("ATELIER", margin + 6, 12, 300, 34, juce::Justification::centredLeft, false);
-    g.setColour (col::gold);
+    // the name plate, in gold leaf
+    {
+        juce::ColourGradient leaf (col::goldLight, 0.0f, 14.0f, col::gold, 0.0f, 44.0f, false);
+        leaf.addColour (0.45, col::gold);
+        leaf.addColour (0.62, col::goldDark.brighter (0.25f));
+        leaf.addColour (0.8, col::goldLight.darker (0.1f));
+        g.setGradientFill (leaf);
+        g.setFont (font (30.0f, true, 0.32f));
+        g.drawText ("ATELIER", margin + 6, 12, 300, 34, juce::Justification::centredLeft, false);
+    }
+    g.setColour (col::creamDim);
     g.setFont (font (10.0f, true, 0.34f));
     g.drawText ("BOUTIQUE CHANNEL STRIP", margin + 8, 46, 300, 14, juce::Justification::centredLeft, false);
 
@@ -515,7 +529,7 @@ void AtelierEditor::Content::paint (juce::Graphics& g)
 
     for (auto p : { juce::Point<float> (7.0f, 7.0f), { r.getRight() - 7.0f, 7.0f }, { 7.0f, r.getBottom() - 7.0f }, { r.getRight() - 7.0f, r.getBottom() - 7.0f } })
     {
-        g.setColour (juce::Colour (0xff3d4046));
+        g.setGradientFill (juce::ColourGradient (col::goldLight.darker (0.2f), 0.0f, p.y - 3.5f, col::goldDark, 0.0f, p.y + 3.5f, false));
         g.fillEllipse (p.x - 3.5f, p.y - 3.5f, 7.0f, 7.0f);
         g.setColour (juce::Colours::black.withAlpha (0.7f));
         g.drawLine (p.x - 2.2f, p.y - 2.2f, p.x + 2.2f, p.y + 2.2f, 1.0f);

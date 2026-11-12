@@ -121,7 +121,7 @@ public:
                 const bool hot = i == dragging || i == hover;
                 g.setColour (col::blue.brighter (hot ? 0.7f : 0.3f).withAlpha (eqOn ? 1.0f : 0.5f));
                 g.fillEllipse (juce::Rectangle<float> (hot ? 17.0f : 14.0f, hot ? 17.0f : 14.0f).withCentre (p));
-                g.setColour (juce::Colour (0xff101214));
+                g.setColour (col::ink);
                 g.setFont (font (9.0f, true));
                 g.drawText (juce::String (i + 1), juce::Rectangle<float> (16.0f, 12.0f).withCentre (p), juce::Justification::centred, false);
             }
@@ -389,7 +389,7 @@ private:
         void paintButton (juce::Graphics& g, bool over, bool down) override
         {
             auto r = getLocalBounds().toFloat().reduced (1.0f);
-            g.setColour (juce::Colour (0xff131416).brighter (down ? 0.2f : (over ? 0.1f : 0.0f)));
+            g.setColour (col::button.brighter (down ? 0.2f : (over ? 0.1f : 0.0f)));
             g.fillRoundedRectangle (r, 3.0f);
             g.setColour (col::wellEdge);
             g.drawRoundedRectangle (r, 3.0f, 1.0f);

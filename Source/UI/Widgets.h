@@ -9,11 +9,45 @@ using APVTS = juce::AudioProcessorValueTreeState;
 
 namespace col
 {
-    const juce::Colour faceplate { 0xff17181b }, panel { 0xff232529 }, panelEdge { 0xff0c0d0e }, panelHi { 0xff34373d };
-    const juce::Colour well { 0xff0d0e0f }, wellEdge { 0xff3a3d43 }, ledOff { 0xff2c2e33 };
-    const juce::Colour cream { 0xffe9dfc6 }, creamDim { 0xffa39d8d };
-    const juce::Colour gold { 0xffc9a25a }, red { 0xffc0503f }, blue { 0xff4f86b8 }, green { 0xff62a070 };
-    const juce::Colour orange { 0xffd9853b }, purple { 0xff8672b8 }, ivory { 0xffcfc7b2 }, teal { 0xff4fa3a0 };
+    // Warm blacks and bronzes for the bodywork, champagne gold for the metal. The module colours are kept
+    // for lamps, scale dots and title rules only, so the strip reads as one instrument, not nine.
+    const juce::Colour faceplate { 0xff161513 }, panel { 0xff23211e }, panelEdge { 0xff0a0908 }, panelHi { 0xff8a7448 };
+    const juce::Colour well { 0xff0d0c0b }, wellEdge { 0xff4b4233 }, ledOff { 0xff2e2b27 }, button { 0xff141311 };
+    const juce::Colour cream { 0xffece2ca }, creamDim { 0xffa69d89 }, ink { 0xff15120d };
+    const juce::Colour gold { 0xffc8a45e }, goldLight { 0xfff0dcaa }, goldDark { 0xff6f5628 };
+    const juce::Colour red { 0xffbd5441 }, blue { 0xff5f8cb4 }, green { 0xff6a9d72 };
+    const juce::Colour orange { 0xffd58a45 }, purple { 0xff8a78b4 }, ivory { 0xffd6ccb2 }, teal { 0xff58a09a };
+}
+
+/** Top-to-bottom shading of polished metal: a bright upper edge, the body colour, a darker belly and a little
+    light bounced back along the bottom. */
+inline juce::ColourGradient metal (juce::Colour base, float top, float bottom)
+{
+    juce::ColourGradient g (base.brighter (0.55f), 0.0f, top, base.darker (0.1f), 0.0f, bottom, false);
+    g.addColour (0.35, base);
+    g.addColour (0.78, base.darker (0.38f));
+    return g;
+}
+
+/** A disc of spun metal: the brightness goes round the dial, as it does on a lathe-turned knob, with two
+    highlights opposite each other. */
+inline void paintSpunMetal (juce::Graphics& g, juce::Rectangle<float> disc, juce::Colour light, juce::Colour dark)
+{
+    constexpr int slices = 72;
+    const float step = juce::MathConstants<float>::twoPi / (float) slices;
+    for (int i = 0; i < slices; ++i)
+    {
+        const float a = step * (float) i;
+        const float shine = 0.5f + 0.5f * std::cos (2.0f * (a + step * 0.5f + 0.7f));
+        juce::Path slice;
+        slice.addPieSegment (disc, a, a + step * 1.35f, 0.0f);
+        g.setColour (dark.interpolatedWith (light, shine * shine));
+        g.fillPath (slice);
+    }
+    // overall light from above, so it still reads as a solid object
+    g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.16f), 0.0f, disc.getY(),
+                                             juce::Colours::black.withAlpha (0.30f), 0.0f, disc.getBottom(), false));
+    g.fillEllipse (disc);
 }
 
 inline juce::Font font (float size, bool bold = false, float tracking = 0.0f)
@@ -47,12 +81,13 @@ inline float drawWrapped (juce::Graphics& g, const juce::String& text, const juc
 inline void paintPanel (juce::Graphics& g, juce::Rectangle<float> r)
 {
     r = r.reduced (0.5f);
-    g.setGradientFill (juce::ColourGradient (col::panel.brighter (0.05f), 0.0f, r.getY(), col::panel.darker (0.25f), 0.0f, r.getBottom(), false));
+    g.setGradientFill (juce::ColourGradient (col::panel.brighter (0.06f), 0.0f, r.getY(), col::panel.darker (0.28f), 0.0f, r.getBottom(), false));
     g.fillRoundedRectangle (r, 6.0f);
     g.setColour (col::panelEdge);
     g.drawRoundedRectangle (r, 6.0f, 1.2f);
-    g.setColour (col::panelHi.withAlpha (0.6f));
-    g.drawHorizontalLine ((int) r.getY() + 1, r.getX() + 6.0f, r.getRight() - 6.0f);
+    // a brass inlay just inside the edge, catching the light along the top
+    g.setGradientFill (juce::ColourGradient (col::panelHi.withAlpha (0.55f), 0.0f, r.getY(), col::goldDark.withAlpha (0.22f), 0.0f, r.getBottom(), false));
+    g.drawRoundedRectangle (r.reduced (1.4f), 5.0f, 0.8f);
 }
 
 //==============================================================================
@@ -61,11 +96,11 @@ class AtelierLookAndFeel final : public juce::LookAndFeel_V4
 public:
     AtelierLookAndFeel()
     {
-        setColour (juce::ComboBox::backgroundColourId, juce::Colour (0xff131416));
+        setColour (juce::ComboBox::backgroundColourId, col::button);
         setColour (juce::ComboBox::textColourId, col::cream);
         setColour (juce::ComboBox::outlineColourId, col::wellEdge);
         setColour (juce::ComboBox::arrowColourId, col::creamDim);
-        setColour (juce::PopupMenu::backgroundColourId, juce::Colour (0xff1c1d20));
+        setColour (juce::PopupMenu::backgroundColourId, juce::Colour (0xff1d1b18));
         setColour (juce::PopupMenu::textColourId, col::cream);
         setColour (juce::PopupMenu::highlightedBackgroundColourId, col::gold);
         setColour (juce::PopupMenu::highlightedTextColourId, juce::Colours::black);
@@ -92,23 +127,30 @@ public:
         g.fillEllipse (centre.x - radius, centre.y - radius + 3.0f, radius * 2.0f, radius * 2.0f);
 
         auto skirt = juce::Rectangle<float> (radius * 2.0f, radius * 2.0f).withCentre (centre);
-        g.setGradientFill (juce::ColourGradient (juce::Colour (0xff4a4d54), centre.x, skirt.getY(),
-                                                 juce::Colour (0xff101113), centre.x, skirt.getBottom(), false));
+        g.setGradientFill (juce::ColourGradient (juce::Colour (0xff4d4840), centre.x, skirt.getY(),
+                                                 juce::Colour (0xff100f0d), centre.x, skirt.getBottom(), false));
         g.fillEllipse (skirt);
         g.setColour (juce::Colours::black.withAlpha (0.8f));
         g.drawEllipse (skirt, 1.0f);
 
-        auto cap = skirt.reduced (radius * 0.24f);
-        g.setGradientFill (juce::ColourGradient (accent.brighter (0.35f), centre.x, cap.getY(),
-                                                 accent.darker (0.75f), centre.x, cap.getBottom(), false));
-        g.fillEllipse (cap);
-        g.setColour (juce::Colours::white.withAlpha (0.18f));
-        g.drawEllipse (cap.reduced (0.5f), 1.0f);
+        // the cap is turned brass; the module colour lives in the scale dots around it
+        auto cap = skirt.reduced (radius * 0.2f);
+        g.setColour (col::goldDark.darker (0.6f));
+        g.fillEllipse (cap.expanded (1.2f));
+        paintSpunMetal (g, cap, col::goldLight, col::goldDark);
+        g.setColour (col::goldLight.withAlpha (0.55f));
+        g.drawEllipse (cap.reduced (0.5f), 0.9f);
+        g.setColour (col::goldDark.darker (0.4f).withAlpha (0.55f));
+        g.drawEllipse (cap.reduced (radius * 0.13f), 0.8f);
 
+        // engraved pointer, filled with dark enamel
+        const auto turn = juce::AffineTransform::rotation (startAngle + pos * (endAngle - startAngle)).translated (centre);
         juce::Path pointer;
-        pointer.addRoundedRectangle (-1.5f, -radius * 0.98f, 3.0f, radius * 0.62f, 1.5f);
-        g.setColour (juce::Colour (0xfff6f0de));
-        g.fillPath (pointer, juce::AffineTransform::rotation (startAngle + pos * (endAngle - startAngle)).translated (centre));
+        pointer.addRoundedRectangle (-1.6f, -radius * 0.78f, 3.2f, radius * 0.50f, 1.6f);
+        g.setColour (col::goldLight.withAlpha (0.5f));
+        g.fillPath (pointer, juce::AffineTransform::translation (0.0f, 0.8f).followedBy (turn));
+        g.setColour (col::ink);
+        g.fillPath (pointer, turn);
     }
 
     void drawComboBox (juce::Graphics& g, int w, int h, bool, int, int, int, int, juce::ComboBox& box) override
@@ -214,11 +256,12 @@ public:
             return;
         }
 
-        g.setColour (lit ? accent : juce::Colour (0xff131416).brighter (over ? 0.08f : 0.0f));
+        if (lit) g.setGradientFill (metal (accent, r.getY(), r.getBottom()));
+        else     g.setColour (col::button.brighter (over ? 0.08f : 0.0f));
         g.fillRoundedRectangle (r, 3.0f);
-        g.setColour (lit ? accent.brighter (0.4f) : col::wellEdge);
+        g.setColour (lit ? accent.brighter (0.5f) : col::wellEdge);
         g.drawRoundedRectangle (r, 3.0f, 1.0f);
-        g.setColour (lit ? juce::Colour (0xff141414) : col::creamDim);
+        g.setColour (lit ? col::ink : col::creamDim);
         g.setFont (font (10.5f, true, 0.06f));
         g.drawText (getName(), getLocalBounds(), juce::Justification::centred, false);
     }
@@ -242,11 +285,12 @@ public:
     {
         const bool lit = getToggleState();
         auto r = getLocalBounds().toFloat().reduced (1.0f);
-        g.setColour (lit ? accent : juce::Colour (0xff131416).brighter (over ? 0.08f : 0.0f));
+        if (lit) g.setGradientFill (metal (accent, r.getY(), r.getBottom()));
+        else     g.setColour (col::button.brighter (over ? 0.08f : 0.0f));
         g.fillRoundedRectangle (r, 3.0f);
-        g.setColour (lit ? accent.brighter (0.4f) : col::wellEdge);
+        g.setColour (lit ? accent.brighter (0.5f) : col::wellEdge);
         g.drawRoundedRectangle (r, 3.0f, 1.0f);
-        g.setColour (lit ? juce::Colour (0xff141414) : col::creamDim);
+        g.setColour (lit ? col::ink : col::creamDim);
         g.setFont (font (10.5f, true, 0.06f));
         g.drawText (getName(), getLocalBounds(), juce::Justification::centred, false);
     }
@@ -343,7 +387,7 @@ public:
 
         juce::Path glass;
         glass.addRoundedRectangle (r.getX(), r.getY(), r.getWidth(), r.getHeight(), 15.0f, 15.0f, true, true, false, false);
-        g.setColour (juce::Colour (0xff0e0f10));
+        g.setColour (juce::Colour (0xff0e0d0c));
         g.fillPath (glass);
         g.setGradientFill (juce::ColourGradient (glow.withAlpha (0.25f + 0.75f * level), r.getCentreX(), r.getBottom() - 14.0f,
                                                  glow.withAlpha (0.03f), r.getCentreX(), r.getY(), true));
@@ -351,11 +395,11 @@ public:
         g.setColour (juce::Colours::white.withAlpha (0.22f));
         g.strokePath (glass, juce::PathStrokeType (1.0f));
 
-        g.setColour (juce::Colour (0xff2a2b2e).withAlpha (0.9f));
+        g.setColour (juce::Colour (0xff2b2925).withAlpha (0.9f));
         g.fillRoundedRectangle (r.getCentreX() - 7.0f, r.getY() + 16.0f, 14.0f, 30.0f, 2.0f);
         g.setColour (glow.brighter (0.6f).withAlpha (0.35f + 0.65f * level));
         g.fillRect (r.getCentreX() - 0.75f, r.getY() + 20.0f, 1.5f, 22.0f);
-        g.setColour (juce::Colour (0xff3b3d42));
+        g.setColour (juce::Colour (0xff4b4233));
         g.fillRect (r.getX() - 3.0f, r.getBottom(), r.getWidth() + 6.0f, 5.0f);
     }
 
@@ -502,10 +546,10 @@ public:
             const bool lit = i == index;
             if (lit)
             {
-                g.setGradientFill (juce::ColourGradient (accent.brighter (0.25f), 0.0f, b.getY(), accent.darker (0.25f), 0.0f, b.getBottom(), false));
+                g.setGradientFill (metal (accent, b.getY(), b.getBottom()));
                 g.fillRoundedRectangle (b, 3.5f);
             }
-            g.setColour (lit ? juce::Colour (0xff15130f) : col::creamDim);
+            g.setColour (lit ? col::ink : col::creamDim);
             g.setFont (font (13.0f, true, 0.18f));
             g.drawText (names[i].toUpperCase(), b, juce::Justification::centred, false);
         }

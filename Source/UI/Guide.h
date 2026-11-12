@@ -299,7 +299,7 @@ public:
         auto tag = inner.removeFromLeft (34.0f).removeFromTop (14.0f);
         g.setColour (level);
         g.fillRoundedRectangle (tag, 2.0f);
-        g.setColour (juce::Colour (0xff141414));
+        g.setColour (col::ink);
         g.setFont (font (8.5f, true, 0.12f));
         g.drawText ("LIVE", tag, juce::Justification::centred, false);
         drawWrapped (g, coach.text, font (11.0f), col::cream, inner.withTrimmedLeft (8.0f));
@@ -327,9 +327,9 @@ private:
         {
             auto r = getLocalBounds().toFloat().reduced (0.5f);
             const auto base = col::gold.brighter (over ? 0.2f : 0.0f).darker (down ? 0.2f : 0.0f);
-            g.setGradientFill (juce::ColourGradient (base.brighter (0.25f), 0.0f, r.getY(), base.darker (0.25f), 0.0f, r.getBottom(), false));
+            g.setGradientFill (metal (base, r.getY(), r.getBottom()));
             g.fillRoundedRectangle (r, 4.0f);
-            g.setColour (juce::Colour (0xff15130f));
+            g.setColour (col::ink);
             g.setFont (font (10.5f, true, 0.12f));
             g.drawText (getName(), getLocalBounds(), juce::Justification::centred, false);
         }
