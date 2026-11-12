@@ -121,8 +121,8 @@ private:
     int abSlot = 0;
 
     // Index 0 is the normal linear-phase path, index 1 the minimum-phase low-latency path.
-    std::unique_ptr<juce::dsp::Oversampling<float>> tubeOS[2], colourOS[2];
-    atelier::StereoDelay tubeDelay[2], colourDelay[2], keyDelay[2];
+    std::unique_ptr<juce::dsp::Oversampling<float>> tubeOS[2], colourOS[2], compOS[2];
+    atelier::StereoDelay tubeDelay[2], compDelay[2], colourDelay[2], keyDelay[2];
     int latencyFor[2] {};
     bool prepared = false, llActive = false;
     int duckHold = 0;

@@ -351,8 +351,27 @@ int main (int argc, char** argv)
         std::cout << "    15 kHz at -6 dBFS: largest alias (18 kHz or 3 kHz) " << optoAlias << " dBc" << std::endl;
         check (optoH2Loud > -48.0f && optoH2Loud < -36.0f && optoH3Loud < optoH2Loud - 15.0f && optoH2Quiet < optoH2Loud - 9.0f,
                "the opto's 12AX7 make-up stage adds a touch of 2nd harmonic that grows with level");
-        // it runs at the compressor's rate, as the polynomial it replaced did, so it aliases as that did and no worse
-        check (optoAlias < -40.0f, "the opto's make-up stage aliases no more than the colour it replaced");
+        // it runs 2x oversampled, so its harmonics of the top octave are filtered out instead of folding back
+        check (optoAlias < -90.0f, "the opto's make-up stage doesn't alias");
+
+        // The compressed signal goes through the make-up valve's oversampler and the dry one through a delay: at half
+        // mix the two must add without combing, right up to the top of the band
+        auto mixLevel = [&] (double freq, float mixPercent)
+        {
+            AtelierProcessor p;
+            p.setPlayConfigDetails (2, 2, sr, 512);
+            p.prepareToPlay (sr, 512);
+            setParam (p, "tubeOn", 0.0f);
+            setParam (p, "compOn", 1.0f); setParam (p, "compModel", 2.0f); setParam (p, "compThr", 0.0f); setParam (p, "compMix", mixPercent);
+            auto b = sine (2, len, sr, freq, -30.0f);
+            run (p, b, 512);
+            return toneDb (b, 24000, sr, freq);
+        };
+        float worstComb = 0.0f;
+        for (double f : { 1000.0, 10000.0, 18000.0 })
+            worstComb = std::max (worstComb, std::abs (mixLevel (f, 50.0f) - mixLevel (f, 100.0f)));
+        std::cout << "  opto at half mix against full: largest level difference at 1, 10, 18 kHz " << worstComb << " dB" << std::endl;
+        check (worstComb < 0.1f, "the compressed and dry signals stay in time, so the mix knob doesn't comb");
 
         // The opto's timing comes from its light-dependent cell: held at a reduction, then left in the dark
         struct Opto { double attack90, releaseHalf, after3s; };
@@ -1550,7 +1569,7 @@ int main (int argc, char** argv)
         {
             const double percent = cost (1, 0, 2);
             std::cout << "  mode 1 with the Opto compressor: " << percent << " % of one core at 48 kHz" << std::endl;
-            check (percent < 15.0, "CPU use is reasonable with the Opto compressor");
+            check (percent < 18.0, "CPU use is reasonable with the Opto compressor");     // a valve stage, 2x oversampled
         }
         {
             const double percent = cost (1, 0, 1);

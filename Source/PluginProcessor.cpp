@@ -7,6 +7,7 @@ namespace
 {
     constexpr int tubeOsOrder = 2;      // 4x for the valve stage
     constexpr int colourOsOrder = 3;    // 8x for tape + iron: tape pre-emphasis drives the top end hardest
+    constexpr int compOsOrder = 1;      // 2x for the compressor's make-up valve: its 2nd and 3rd harmonics fit below the new Nyquist
 
     void pushPeak (std::atomic<float>& dest, float v) noexcept
     {
@@ -115,6 +116,8 @@ void AtelierProcessor::prepareToPlay (double sampleRate, int)
     colourOS[0] = std::make_unique<OS> (2, colourOsOrder, OS::filterHalfBandFIREquiripple, true, true);
     tubeOS[1]   = std::make_unique<OS> (2, tubeOsOrder,   OS::filterHalfBandPolyphaseIIR,  true, false);
     colourOS[1] = std::make_unique<OS> (2, colourOsOrder, OS::filterHalfBandPolyphaseIIR,  true, false);
+    compOS[0]   = std::make_unique<OS> (2, compOsOrder,   OS::filterHalfBandFIREquiripple, true, true);
+    compOS[1]   = std::make_unique<OS> (2, compOsOrder,   OS::filterHalfBandPolyphaseIIR,  true, false);
 
     limiter.prepare (sr);
 
@@ -122,14 +125,17 @@ void AtelierProcessor::prepareToPlay (double sampleRate, int)
     {
         tubeOS[i]->initProcessing ((size_t) chunk);
         colourOS[i]->initProcessing ((size_t) chunk);
+        compOS[i]->initProcessing ((size_t) chunk);
         // The linear-phase filters have an exact delay. The minimum-phase ones are measured, because
         // what matters for staying in time is their delay across the audible band, not a nominal figure.
         const int tubeLatency   = i == 0 ? juce::roundToInt (tubeOS[i]->getLatencyInSamples())   : measureDelay (*tubeOS[i], chunk);
         const int colourLatency = i == 0 ? juce::roundToInt (colourOS[i]->getLatencyInSamples()) : measureDelay (*colourOS[i], chunk);
+        const int compLatency   = i == 0 ? juce::roundToInt (compOS[i]->getLatencyInSamples())   : measureDelay (*compOS[i], chunk);
         tubeDelay[i].prepare (tubeLatency);
         keyDelay[i].prepare (tubeLatency);      // the compressor sits after the valve stage
         colourDelay[i].prepare (colourLatency);
-        latencyFor[i] = tubeLatency + colourLatency + (i == 0 ? limiter.fullLatency() : 0);
+        compDelay[i].prepare (compLatency);
+        latencyFor[i] = tubeLatency + compLatency + colourLatency + (i == 0 ? limiter.fullLatency() : 0);
         dryDelay[i].prepare (latencyFor[i]);
     }
 
@@ -155,7 +161,7 @@ void AtelierProcessor::prepareToPlay (double sampleRate, int)
     gate.prepare (sr);
     deEsser.prepare (sr);
     eq.prepare (sr);
-    comp.prepare (sr);
+    comp.prepare (sr, sr * (double) (1 << compOsOrder));
     image.prepare (sr);
     loudness.prepare (sr);
     outTruePeak.reset();
@@ -198,8 +204,8 @@ void AtelierProcessor::resetLatencyPath()
 {
     for (int i = 0; i < 2; ++i)
     {
-        tubeOS[i]->reset(); colourOS[i]->reset();
-        tubeDelay[i].reset(); colourDelay[i].reset(); keyDelay[i].reset(); dryDelay[i].reset();
+        tubeOS[i]->reset(); compOS[i]->reset(); colourOS[i]->reset();
+        tubeDelay[i].reset(); compDelay[i].reset(); colourDelay[i].reset(); keyDelay[i].reset(); dryDelay[i].reset();
     }
     limiter.setLowLatency (llActive);
     tube.reset(); tape.reset(); iron.reset(); comp.reset();
@@ -449,24 +455,46 @@ void AtelierProcessor::processChunk (float* l, float* r, const float* kl, const 
                });
     };
 
+    // The compressor turns the gain down at the base rate; its make-up valve runs 2x oversampled, and the dry
+    // signal is delayed to match, whether the compressor is on or not, so the timing never changes.
     auto runComp = [&]
     {
         const bool keyed = kl != nullptr && pCompExt->load() > 0.5f;
-        stage (compFade, on (pCompOn) && ! swapping, juce::jlimit (0, 3, (int) pCompModel->load()) | (keyed ? 4 : 0),
-               [&] { comp.reset(); },
-               [&]
-               {
-                   const bool useKey = (compFade.active & 4) != 0 && kl != nullptr;
-                   Compressor::Params p;
-                   p.model = compFade.active & 3;
-                   p.thresholdDb = sm[sCompThr];   p.ratio = sm[sCompRatio];
-                   p.attackMs = sm[sCompAtt];      p.releaseMs = sm[sCompRel];
-                   p.makeupDb = sm[sCompMakeup];   p.mix = sm[sCompMix] * 0.01f;
-                   p.scHpf = sm[sCompSc];          p.autoRelease = pCompAuto->load() > 0.5f;
-                   p.extraKnee = kneeSm;           p.external = useKey;
-                   comp.set (p);
-                   pushPeak (meters.grComp, comp.process (l, r, n, useKey ? keyL.data() : nullptr, useKey ? keyR.data() : nullptr));
-               });
+        compDelay[path].process (l, r, tmpL.data(), tmpR.data(), n);
+        bool cold = false;
+        if (compFade.begin (on (pCompOn) && ! swapping, juce::jlimit (0, 3, (int) pCompModel->load()) | (keyed ? 4 : 0), cold))
+        {
+            auto& os = *compOS[path];
+            if (cold)
+            {
+                os.reset(); comp.reset();
+                compFade.hold = 2 * compDelay[path].len + 8;
+            }
+
+            const bool useKey = (compFade.active & 4) != 0 && kl != nullptr;
+            Compressor::Params p;
+            p.model = compFade.active & 3;
+            p.thresholdDb = sm[sCompThr];   p.ratio = sm[sCompRatio];
+            p.attackMs = sm[sCompAtt];      p.releaseMs = sm[sCompRel];
+            p.makeupDb = sm[sCompMakeup];   p.mix = sm[sCompMix] * 0.01f;
+            p.scHpf = sm[sCompSc];          p.autoRelease = pCompAuto->load() > 0.5f;
+            p.extraKnee = kneeSm;           p.external = useKey;
+            comp.set (p);
+            pushPeak (meters.grComp, comp.process (l, r, n, useKey ? keyL.data() : nullptr, useKey ? keyR.data() : nullptr));
+
+            float* chans[2] = { l, r };
+            juce::dsp::AudioBlock<float> block (chans, 2, (size_t) n);
+            auto up = os.processSamplesUp (block);
+            comp.colour (up.getChannelPointer (0), up.getChannelPointer (1), (int) up.getNumSamples());
+            os.processSamplesDown (block);
+            comp.finish (l, r, tmpL.data(), tmpR.data(), n);
+            compFade.mix (l, r, tmpL.data(), tmpR.data(), n);
+        }
+        else
+        {
+            std::copy (tmpL.begin(), tmpL.begin() + n, l);
+            std::copy (tmpR.begin(), tmpR.begin() + n, r);
+        }
     };
 
     if (eqPreActive) { runEq(); runComp(); }

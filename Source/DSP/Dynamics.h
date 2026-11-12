@@ -138,10 +138,11 @@ struct Compressor
         bool  external = false;     // detector listens to the sidechain input instead of the audio
     };
 
-    void prepare (double sampleRate)
+    /** @param colourRate  the rate colour() runs at: the make-up valve is oversampled so it doesn't alias */
+    void prepare (double sampleRate, double colourRate)
     {
         sr = sampleRate;
-        makeupValve.prepare (sr);
+        makeupValve.prepare (colourRate);
         makeupValve.setInputScale (0.25);   // a full-scale sample puts 0.25 V on the grid: a touch of 2nd harmonic
         valves.prepare (sr);
         valves.setInputScale (4.0);         // a full-scale sample puts 4 V on each grid; see Vari-Mu below
@@ -232,6 +233,10 @@ struct Compressor
         if (useSc) scFilter.setHighPass (sr, p.scHpf, 0.707);
     }
 
+    /** Three steps, so the make-up valve can run oversampled between them:
+        process() turns the audio down in place (the gain element's output, before make-up and mix) and returns
+        the largest gain reduction; colour() is the make-up amplifier, at the colour rate; finish() applies the
+        make-up gain and the mix against the dry signal, which the caller has delayed to line up. */
     float process (float* l, float* r, int n, const float* keyL = nullptr, const float* keyR = nullptr) noexcept
     {
         float maxGr = 0.0f;
@@ -303,20 +308,31 @@ struct Compressor
                 wl = inL * g; wr = inR * g;
             }
             fb[0] = wl; fb[1] = wr;
-
-            if (optoGain)
-            {
-                // the opto's make-up amplifier: a real 12AX7 stage (TubeCircuit), the valve the classic optical
-                // compressors use after their cell. It runs at the compressor's rate, as the gain cells do.
-                wl = makeupValve.process (0, wl);
-                wr = makeupValve.process (1, wr);
-            }
-
-            l[i] = inL + mix * (wl * makeup - inL);
-            r[i] = inR + mix * (wr * makeup - inR);
+            l[i] = wl; r[i] = wr;
             maxGr = std::max (maxGr, gr);
         }
         return maxGr;
+    }
+
+    /** The opto's make-up amplifier: a real 12AX7 stage (TubeCircuit), the valve the classic optical compressors
+        use after their cell. The other models have none. */
+    void colour (float* l, float* r, int n) noexcept
+    {
+        if (! optoGain) return;
+        for (int i = 0; i < n; ++i)
+        {
+            l[i] = makeupValve.process (0, l[i]);
+            r[i] = makeupValve.process (1, r[i]);
+        }
+    }
+
+    void finish (float* l, float* r, const float* dryL, const float* dryR, int n) const noexcept
+    {
+        for (int i = 0; i < n; ++i)
+        {
+            l[i] = dryL[i] + mix * (l[i] * makeup - dryL[i]);
+            r[i] = dryR[i] + mix * (r[i] * makeup - dryR[i]);
+        }
     }
 
     enum Release { single, programme };
