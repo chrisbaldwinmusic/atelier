@@ -959,6 +959,32 @@ int main (int argc, char** argv)
         }
         check (bass[1].thd < bass[0].thd - 4.0f && bass[1].thd < bass[2].thd - 4.0f, "nickel is the cleanest core");
         check (bass[2].h2 > bass[0].h2 + 20.0f && bass[2].h2 > bass[1].h2 + 20.0f, "the console core's standing current gives it the 2nd harmonic");
+
+        // Hysteresis: at low levels the loop leaves a floor of odd harmonics that no longer falls with level
+        auto quiet = [&] (const atelier::IronCircuit::Core& core, double volts)
+        {
+            const double rate = 384000.0;
+            atelier::IronCircuit ic;
+            ic.prepare (rate);
+            ic.setCore (core);
+            const int n = (int) (0.75 * rate), from = (int) (0.25 * rate);
+            juce::AudioBuffer<float> b (1, n - from);
+            for (int i = 0; i < n; ++i)
+            {
+                const double y = ic.processVolts (0, volts * std::sin (2.0 * juce::MathConstants<double>::pi * 40.0 * i / rate));
+                if (i >= from) b.setSample (0, i - from, (float) (y / volts));
+            }
+            return toneDb (b, 0, rate, 120.0) - toneDb (b, 0, rate, 40.0);
+        };
+        const float steel20 = quiet (atelier::IronCircuit::steel, 2.0), steel40 = quiet (atelier::IronCircuit::steel, 0.2),
+                    nickel40 = quiet (atelier::IronCircuit::nickel, 0.2);
+        auto noLoop = atelier::IronCircuit::steel;
+        noLoop.hc = 0.0;
+        const float steel40NoLoop = quiet (noLoop, 0.2);
+        std::cout << "  40 Hz, H3 at 2 V and 0.2 V: steel " << steel20 << ", " << steel40 << " dBc (" << steel40NoLoop << " without the loop); nickel at 0.2 V "
+                  << nickel40 << " dBc" << std::endl;
+        check (steel40 > steel40NoLoop + 3.0f && std::abs (steel40 - steel20) < 8.0f, "the core's hysteresis loop leaves a low-level floor that stops falling with level");
+        check (nickel40 < steel40 - 15.0f, "nickel's loop is far narrower than steel's");
     }
 
     if (want ("Valve circuits against ngspice"))
@@ -1313,7 +1339,9 @@ int main (int argc, char** argv)
                             // the core's flux is the integral of the voltage across it: a 1 F capacitor charged by that voltage
                             deck.replaceWithText ("Output transformer\nVin in 0 SIN(0 " + juce::String (amp) + " " + juce::String (freq) + ")\n"
                                 + "R1 in m " + num (c.R1) + "\nRc m 0 " + num (c.Rc) + "\nBfl 0 fl I=V(m)\nCfl fl 0 1\nRfl fl 0 1e15\n"
-                                + "Bm m 0 I=" + core + "\nLl m o " + num (ll) + "\nC1 o 0 " + num (cw) + "\nRL o 0 " + num (c.RL) + "\n.ic V(fl)=" + num (flux0) + "\n"
+                                // the hysteresis loop's current, from its own equation, alongside the core's curve
+                                + "Bh 0 hy I=(V(m)*" + num (c.hc) + "-abs(V(m))*V(hy))/" + num (c.width * c.lambdaS) + "\nChy hy 0 1\nRhy hy 0 1e15\n"
+                                + "Bm m 0 I=" + core + "+V(hy)\nLl m o " + num (ll) + "\nC1 o 0 " + num (cw) + "\nRL o 0 " + num (c.RL) + "\n.ic V(fl)=" + num (flux0) + " V(hy)=0\n"
                                 + ".options reltol=1e-6\n.control\ntran " + juce::String (1.0 / rate, 15) + " 0.25 0 " + juce::String (0.5 / rate, 15)
                                 + " uic\nlinearize v(o)\nwrdata iron.txt v(o)\n.endc\n.end\n");
                             juce::ChildProcess proc;
