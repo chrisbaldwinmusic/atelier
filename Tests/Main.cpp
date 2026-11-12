@@ -880,6 +880,36 @@ int main (int argc, char** argv)
                "the pentode is cleaner than the triode when driven gently, and its distortion has more bite when pushed");
     }
 
+    if (want ("Iron cores"))
+    {
+        std::cout << "Iron cores" << std::endl;
+        struct Reading { float h2, h3, thd; };
+        auto measure = [&] (int core, double freq)
+        {
+            AtelierProcessor p;
+            p.setPlayConfigDetails (2, 2, sr, 512);
+            p.prepareToPlay (sr, 512);
+            setParam (p, "tubeOn", 0.0f); setParam (p, "ironOn", 1.0f); setParam (p, "ironType", (float) core);
+            auto b = sine (2, len, sr, freq, -18.0f + 3.0103f);     // 0 VU, at the default drive
+            run (p, b, 512);
+            const float f = toneDb (b, 24000, sr, freq);
+            double harm = 0.0;
+            for (int h = 2; h <= 5; ++h) harm += std::pow (10.0, (toneDb (b, 24000, sr, freq * h) - f) / 10.0);
+            return Reading { toneDb (b, 24000, sr, 2.0 * freq) - f, toneDb (b, 24000, sr, 3.0 * freq) - f, (float) (10.0 * std::log10 (harm + 1.0e-30)) };
+        };
+        static const char* coreNames[] = { "steel", "nickel", "console" };
+        Reading bass[3], mid[3];
+        for (int c = 0; c < 3; ++c)
+        {
+            bass[c] = measure (c, 40.0); mid[c] = measure (c, 1000.0);
+            std::cout << "  " << coreNames[c] << ", 0 VU at the default drive: harmonics " << bass[c].thd << " dBc at 40 Hz, " << mid[c].thd
+                      << " dBc at 1 kHz (H2 " << bass[c].h2 << ", H3 " << bass[c].h3 << " at 40 Hz)" << std::endl;
+            check (bass[c].thd > mid[c].thd + 25.0f, juce::String (coreNames[c]) + " saturates the bass long before the midrange");
+        }
+        check (bass[1].thd < bass[0].thd - 4.0f && bass[1].thd < bass[2].thd - 4.0f, "nickel is the cleanest core");
+        check (bass[2].h2 > bass[0].h2 + 20.0f && bass[2].h2 > bass[1].h2 + 20.0f, "the console core's standing current gives it the 2nd harmonic");
+    }
+
     if (want ("Valve circuits against ngspice"))
     {
         std::cout << "Valve circuits against ngspice" << std::endl;
@@ -1050,6 +1080,69 @@ int main (int argc, char** argv)
                     std::cout << "  vari-mu pair, " << c.amp << " V, " << c.what << ": difference from ngspice " << diff << " dB" << std::endl;
                 }
                 check (worst < -60.0f, "vari-mu pair matches the ngspice simulation of the same circuit to better than -60 dB");
+            }
+
+            {
+                // The output transformers at the rate they run at, from quiet to well into saturation, at 40 Hz
+                // (where the core saturates) and 1 kHz (where leakage and winding capacitance start to matter).
+                using IC = atelier::IronCircuit;
+                const double rate = 384000.0;
+                const IC::Core cores[] = { IC::steel, IC::nickel, IC::console };
+                const char* coreNames[] = { "steel", "nickel", "console" };
+                float worst = -200.0f;
+                for (int t = 0; t < 3; ++t)
+                    for (double freq : { 40.0, 1000.0 })
+                        for (double amp : { 1.0, 30.0 })
+                        {
+                            const auto& c = cores[t];
+                            IC model;
+                            model.prepare (rate);
+                            model.setCore (c);
+                            const double ll = c.RL / (c.q * 2.0 * juce::MathConstants<double>::pi * c.f0), cw = c.q / (c.RL * 2.0 * juce::MathConstants<double>::pi * c.f0);
+                            const double flux0 = c.bias * c.lambdaS;
+                            double slope;
+                            const double idc = model.magnetising (flux0, slope);
+                            auto num = [] (double v) { return juce::String (v, 12); };
+                            const juce::String core = "(V(fl)/" + num (c.L0) + ")*(1+" + num (c.lowLevel) + "/pwr(1+(V(fl)/" + num (c.lambda1) + ")*(V(fl)/" + num (c.lambda1)
+                                                      + "),2)+pwr(abs(V(fl))/" + num (c.lambdaS) + "," + juce::String (c.knee) + "))-" + num (idc);
+
+                            const auto deck = outDir.getChildFile ("iron.cir"), data = outDir.getChildFile ("iron.txt");
+                            data.deleteFile();
+                            // the core's flux is the integral of the voltage across it: a 1 F capacitor charged by that voltage
+                            deck.replaceWithText ("Output transformer\nVin in 0 SIN(0 " + juce::String (amp) + " " + juce::String (freq) + ")\n"
+                                + "R1 in m " + num (c.R1) + "\nRc m 0 " + num (c.Rc) + "\nBfl 0 fl I=V(m)\nCfl fl 0 1\nRfl fl 0 1e15\n"
+                                + "Bm m 0 I=" + core + "\nLl m o " + num (ll) + "\nC1 o 0 " + num (cw) + "\nRL o 0 " + num (c.RL) + "\n.ic V(fl)=" + num (flux0) + "\n"
+                                + ".options reltol=1e-6\n.control\ntran " + juce::String (1.0 / rate, 15) + " 0.25 0 " + juce::String (0.5 / rate, 15)
+                                + " uic\nlinearize v(o)\nwrdata iron.txt v(o)\n.endc\n.end\n");
+                            juce::ChildProcess proc;
+                            juce::StringArray cmd { "/bin/sh", "-c", "cd " + outDir.getFullPathName().quoted() + " && SPICE_LIB_DIR="
+                                                                         + ngspice.getParentDirectory().getSiblingFile ("share/ngspice").getFullPathName().quoted()
+                                                                         + " " + ngspice.getFullPathName().quoted() + " -b iron.cir > /dev/null 2>&1" };
+                            std::vector<double> ref;
+                            if (proc.start (cmd) && proc.waitForProcessToFinish (120000))
+                            {
+                                juce::StringArray lines;
+                                lines.addLines (data.loadFileAsString());
+                                for (const auto& line : lines)
+                                {
+                                    const auto parts = juce::StringArray::fromTokens (line.trim(), " \t", "");
+                                    if (parts.size() >= 2) ref.push_back (parts[parts.size() - 1].getDoubleValue());
+                                }
+                            }
+                            const int n = (int) (0.25 * rate) - 2;
+                            if ((int) ref.size() < n) { check (false, juce::String ("ngspice produced a reference for the ") + coreNames[t] + " transformer"); continue; }
+
+                            double err = 0.0, sig = 0.0;
+                            for (int i = 0; i < n; ++i)
+                            {
+                                const double y = model.processVolts (0, amp * std::sin (2.0 * juce::MathConstants<double>::pi * freq * i / rate));
+                                if (i >= (int) (0.05 * rate)) { err += (y - ref[(size_t) i]) * (y - ref[(size_t) i]); sig += ref[(size_t) i] * ref[(size_t) i]; }
+                            }
+                            const float diff = (float) (10.0 * std::log10 (std::max (1.0e-30, err / sig)));
+                            worst = std::max (worst, diff);
+                            std::cout << "  " << coreNames[t] << " transformer, " << freq << " Hz, " << amp << " V: difference from ngspice " << diff << " dB" << std::endl;
+                        }
+                check (worst < -60.0f, "the output transformers match the ngspice simulation of the same circuit to better than -60 dB");
             }
         }
 

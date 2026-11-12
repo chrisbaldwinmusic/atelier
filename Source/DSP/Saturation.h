@@ -2,6 +2,7 @@
 
 #include "Common.h"
 #include "ValveCircuits.h"
+#include "IronCircuit.h"
 
 /*  Analog colour stages. All of these are designed to run at the oversampled rate.
     Each stage is normalised to unity small-signal gain: turning up the drive pushes
@@ -200,62 +201,45 @@ struct TapeStage
 };
 
 //==============================================================================
-/** Output iron / console stage: the core saturates on low-frequency flux first,
-    so bass thickens before the top end is touched. */
+/** Output iron: a transformer solved as a circuit (IronCircuit.h). The core saturates on flux, the integral of
+    the voltage, so the low frequencies saturate first and the top end is left alone. */
 struct IronStage
 {
     enum Type { steel = 0, nickel, console };
 
     void prepare (double osRate)
     {
-        sr = osRate;
-        dc.setCutoff (osRate, 6.0);
-        reset();
+        for (auto& c : circuits) c.prepare (osRate);
+        circuits[steel].setCore (IronCircuit::steel);
+        circuits[nickel].setCore (IronCircuit::nickel);
+        circuits[console].setCore (IronCircuit::console);
     }
 
-    void reset() noexcept   { dc.reset(); sPre[0] = sPre[1] = sPost[0] = sPost[1] = 0.0; }
+    void reset() noexcept   { for (auto& c : circuits) c.reset(); }
 
-    void set (int type, float driveDb, float headroom) noexcept
+    void set (int newType, float driveDb, float headroom) noexcept
     {
-        static constexpr double corner[3] = { 180.0, 90.0, 120.0 };
-        static constexpr double lfAmt[3]  = { 2.0, 0.8, 1.2 };
-        static constexpr float  even[3]   = { 0.05f, 0.02f, 0.16f };
-        type  = std::clamp (type, 0, 2);
-        a     = 1.0 - std::exp (-2.0 * kPi * corner[type] / sr);
-        c     = lfAmt[type];
-        e     = even[type];
-        drive = dbToGain (driveDb) * headroom * 0.7f;
-        inv   = 1.0f / drive;
+        // Volts at the primary for a full-scale sample at 0 dB of drive, fitted so that the default drive on a
+        // 0 VU signal colours the deep bass as much as the Guide's tips describe (about 3 % at 40 Hz on steel).
+        static constexpr double voltsPerUnit[3] = { 115.5, 99.6, 113.5 };
+        type  = std::clamp (newType, 0, 2);
+        drive = dbToGain (driveDb) * headroom;
+        circuits[type].setInputScale (voltsPerUnit[type] * (double) drive);
     }
 
     void process (float* l, float* r, int n) noexcept
     {
-        float* chans[2] = { l, r };
-        const double k = 1.0 / (1.0 + c * a);
-
-        for (int ch = 0; ch < 2; ++ch)
+        auto& c = circuits[type];
+        for (int i = 0; i < n; ++i)     // both channels together: two independent solves can overlap
         {
-            float* x = chans[ch];
-            for (int i = 0; i < n; ++i)
-            {
-                // flux emphasis: w = x + c * lowpass(x)
-                sPre[ch] += a * (x[i] - sPre[ch]);
-                const float u  = drive * (float) (x[i] + c * sPre[ch]);
-                const float u2 = u * u;
-                const float v  = (std::tanh (u) + e * u2 / (1.0f + u2)) * inv;
-
-                // exact inverse of the emphasis filter
-                const double y = (v - c * sPost[ch] * (1.0 - a)) * k;
-                sPost[ch] += a * (y - sPost[ch]);
-                x[i] = dc.hp (ch, (float) y);
-            }
+            l[i] = c.process (0, l[i]);
+            r[i] = c.process (1, r[i]);
         }
     }
 
-    double sr = 192000.0, a = 0.01, c = 1.0;
-    double sPre[2] {}, sPost[2] {};
-    float e = 0.05f, drive = 1.0f, inv = 1.0f;
-    OnePole dc;
+    IronCircuit circuits[3];
+    int type = steel;
+    float drive = 1.0f;
 };
 //==============================================================================
 /** Soft clipper used ahead of the limiter. Short peaks are rounded off instead of being

@@ -31,6 +31,18 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout
     {
         NormalisableRange<float> range (lo, hi, step);
         if (centre > 0.0f) range.setSkewForCentre (centre);
+
+        // On a skewed range the default may not survive the trip to the host's 0..1 value and back exactly
+        // (auval checks this). Settle on the nearest default that does: a few rounds always find one.
+        float norm = range.convertTo0to1 (def);
+        for (int i = 0; i < 16; ++i)
+        {
+            const float next = range.convertTo0to1 (range.convertFrom0to1 (norm));
+            if (next == norm) break;
+            norm = next;
+        }
+        def = range.convertFrom0to1 (norm);
+
         layout.add (std::make_unique<AudioParameterFloat> (ParameterID { id, 1 }, name, range, def,
                         AudioParameterFloatAttributes().withStringFromValueFunction (fmt)));
     };
