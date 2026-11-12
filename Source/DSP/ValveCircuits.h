@@ -505,7 +505,7 @@ private:
 struct PushPullCircuit
 {
     static constexpr double supply = 250.0, Rh = 5.0e3, Lh = 40.0;      // load and inductance seen by half the primary
-    static constexpr double Cin = 47.0e-9, Rgl = 470.0e3, Rgs = 10.0e3, Ck = 100.0e-6;
+    static constexpr double Cin = 47.0e-9, Rgl = 470.0e3, Rgs = 47.0e3, Ck = 100.0e-6;    // a 47k grid stopper keeps grid current in check when slammed
     static constexpr double mismatch = 1.05;
 
     void prepare (double sampleRate)
@@ -659,13 +659,191 @@ private:
     }
 
     struct State { Point point; double h[4] {}; };
-    static constexpr double stepLimit[4] = { 2.5, 60.0, 2.5, 60.0 }, stepTolerance[4] = { 2.0e-3, 5.0e-2, 2.0e-3, 5.0e-2 };
+    static constexpr double stepLimit[4] = { 15.0, 60.0, 15.0, 60.0 }, stepTolerance[4] = { 1.0e-2, 2.5e-1, 1.0e-2, 2.5e-1 };
 
     Core core;
     Point rest;
     double T = 1.0 / 192000.0, Rk = 820.0;
     double gcIn = 0.0, gcK = 0.0, gL = 0.0;
     double restK = 8.0, restH[4] {}, smallSignalGain = 10.0;
+    double inScale = 1.0, outScale = 1.0;
+    State st[2];
+};
+//==============================================================================
+/** The gain element of a variable-mu compressor: two remote-cutoff triodes in push-pull.
+
+        in --+-- Rg -- grid A      plate A ---+
+             |                                3||
+          (bias + control)          B+ ------ 3||---- out
+             |                                3||
+       -in --+-- Rg -- grid B      plate B ---+
+                                  both cathodes to ground
+
+    A remote-cutoff valve has a grid wound with a varying pitch, so instead of switching off sharply its gain
+    falls smoothly as the grid is biased more negative: roughly a dB per volt, gently at first. The compressor's
+    side chain turns the level it hears into a negative voltage on both grids, and the valves themselves do the
+    turning down. Nothing in between is a perfect multiplier, so the character comes from the valves: the gain
+    reduction eases in with a soft knee, and the harmonics grow as the valves are pushed down their curves.
+
+    The control voltage reaches both grids together and so cancels at the output transformer, as it must, or
+    every change of gain would be heard as a thump. The two valves are matched to 0.5 %, as a unit trimmed for
+    balance on the bench is, so a trace of it is left (a low, brief bump when the gain moves fast), along with a
+    little 2nd harmonic.
+
+    Koren's model describes sharp-cutoff valves, so the remote-cutoff valve is made, in the usual way, of several
+    sections of different mu sharing one grid and plate. The section values are this project's own fit to a
+    smooth fall of gain with bias of the kind remote-cutoff valves such as the 6386 show; they are not from a
+    datasheet. */
+struct VariMuCircuit
+{
+    static constexpr double supply = 180.0, restBias = 3.0, Rg = 10.0e3, Rh = 2.0e3, Lh = 100.0, mismatch = 1.005;
+    static constexpr int sections = 4;
+    static constexpr double sectionMu[sections]  = { 50.0, 20.0, 8.0, 3.2 };
+    static constexpr double sectionKg1[sections] = { 113200.1, 5741.7, 10961.8, 126621.3 };
+
+    void prepare (double sampleRate)
+    {
+        T = 1.0 / sampleRate;
+        valve::softplusTable();
+        gL = T / (2.0 * Lh);
+        assemble (core, false);
+
+        // resting point, then the small-signal gain at each control voltage, which the side chain and the meter use
+        Core steady;
+        assemble (steady, true);
+        rest = Point();
+        rest.x[0] = rest.x[2] = -restBias; rest.x[1] = rest.x[3] = supply;
+        double current[4], m[1];
+        steady.settle (steady, rest, stepLimit, current, m);
+        core.evaluate (rest);
+        restH = current[0] - current[2];
+
+        for (int k = 0; k <= tableSize; ++k)
+        {
+            Point p = rest;
+            const double vc = maxControl * k / tableSize;
+            p.x[0] = p.x[2] = -restBias - vc;
+            Device::currents (p);
+            const double g = Rh * (p.d[0][0] + p.d[2][2]) / (1.0 + Rh * (p.d[0][1] + p.d[2][3]));
+            if (k == 0) restGain = g;
+            reductionTable[k] = -20.0 * std::log10 (g / restGain);
+        }
+        reset();
+    }
+
+    void reset() noexcept
+    {
+        for (auto& s : st) { s.point = rest; s.h = restH; }
+    }
+
+    /** Volts at each grid for a full-scale sample. */
+    void setInputScale (double voltsPerUnit) noexcept   { inScale = voltsPerUnit; outScale = 1.0 / (restGain * voltsPerUnit); }
+
+    /** Gain reduction (dB, small signal) for a control voltage, and the control voltage that gives a gain reduction. */
+    double reduction (double control) const noexcept
+    {
+        const double pos = std::clamp (control / maxControl, 0.0, 1.0) * tableSize;
+        const int i = std::min ((int) pos, tableSize - 1);
+        return reductionTable[i] + (pos - i) * (reductionTable[i + 1] - reductionTable[i]);
+    }
+
+    double controlFor (double reductionDb) const noexcept
+    {
+        int lo = 0, hi = tableSize;
+        if (reductionDb >= reductionTable[hi]) return maxControl;
+        while (hi - lo > 1) { const int mid = (lo + hi) / 2; (reductionTable[mid] < reductionDb ? lo : hi) = mid; }
+        const double span = reductionTable[hi] - reductionTable[lo];
+        return maxControl * (lo + (span > 0.0 ? (reductionDb - reductionTable[lo]) / span : 0.0)) / tableSize;
+    }
+
+    /** One sample; `control` is the side chain's voltage, applied negative to both grids. Unity gain at rest. */
+    inline float process (int ch, float x, double control) noexcept
+    {
+        return (float) (processVolts (ch, (double) x * inScale, control) * outScale);
+    }
+
+    /** One sample: volts at grid A (grid B gets the opposite), and volts across half the output winding. */
+    inline double processVolts (int ch, double vin, double control) noexcept
+    {
+        auto& s = st[ch];
+        const double u[4] = { vin, control, s.h, 1.0 };
+        double current[4], m[1];
+        if (! core.solve (s.point, u, current, stepLimit, stepTolerance)) { reset(); return 0.0; }
+        core.measure (u, current, m);
+        s.h += 2.0 * gL * m[0];
+        return m[0];
+    }
+
+private:
+    struct Device
+    {
+        static constexpr bool slope[4][4] = { { true, true, false, false }, { true, false, false, false },
+                                              { false, false, true, true }, { false, false, true, false } };
+        static constexpr int main[2] = { 0, 2 };
+        template <typename Point> static inline bool quiet (const Point& s) noexcept   { return s.i[1] == 0.0 && s.i[3] == 0.0 && s.d[1][0] == 0.0 && s.d[3][2] == 0.0; }
+
+        /** One remote-cutoff valve: the sum of its sections. `strength` scales it, for the mismatch between the pair. */
+        static inline void valveCurrents (double vg, double vp, double strength, double& ip, double& ig, double& dG, double& dP, double& dIg) noexcept
+        {
+            ip = dG = dP = 0.0;
+            for (int k = 0; k < sections; ++k)
+            {
+                const valve::Triode t { sectionMu[k], 1.4, sectionKg1[k] / strength, sectionMu[k] * 6.0, 300.0, 1300.0 };
+                double i, g, dg, dp, dig;
+                t.currents (vg, vp, i, g, dg, dp, dig);
+                ip += i; dG += dg; dP += dp;
+            }
+            if (vg > 0.0) { const double r = std::sqrt (vg); ig = vg * r / 1300.0; dIg = 1.5 * r / 1300.0; }
+            else          { ig = dIg = 0.0; }
+        }
+
+        template <typename Point>
+        static inline void currents (Point& s) noexcept
+        {
+            valveCurrents (s.x[0], s.x[1], 1.0, s.i[0], s.i[1], s.d[0][0], s.d[0][1], s.d[1][0]);
+            valveCurrents (s.x[2], s.x[3], 1.0 / mismatch, s.i[2], s.i[3], s.d[2][2], s.d[2][3], s.d[3][2]);
+        }
+    };
+
+    using Core = valve::Core<4, 4, 1, Device>;
+    using Point = Core::Point;
+
+    void assemble (Core& c, bool steady) const noexcept
+    {
+        const double gl = steady ? 1.0e3 : gL;      // at rest the winding is a short circuit
+
+        // nodes: 0 = grid A, 1 = grid B, 2 = voltage across half the output winding
+        double G[3][3] {};
+        G[0][0] = 1.0 / Rg;  G[1][1] = 1.0 / Rg;  G[2][2] = 1.0 / Rh + gl;
+
+        // sources: input voltage, control voltage, the winding's history, and a constant 1
+        double B[3][4] {};
+        B[0][0] = 1.0 / Rg;   B[0][1] = -1.0 / Rg;  B[0][3] = -restBias / Rg;
+        B[1][0] = -1.0 / Rg;  B[1][1] = -1.0 / Rg;  B[1][3] = -restBias / Rg;
+        B[2][2] = -1.0;
+
+        double N[3][4] {};
+        N[0][1] = -1.0;  N[1][3] = -1.0;
+        N[2][0] = 1.0;   N[2][2] = -1.0;
+
+        // plate A sits at the supply minus the winding voltage, plate B at the supply plus it
+        double Sx[4][3] {}, Sm[1][3] {};
+        Sx[0][0] = 1.0;  Sx[1][2] = -1.0;  Sx[2][1] = 1.0;  Sx[3][2] = 1.0;
+        Sm[0][2] = 1.0;
+
+        c.reduce<3> (G, B, N, Sx, Sm);
+        c.P[1][3] += supply;  c.P[3][3] += supply;
+    }
+
+    struct State { Point point; double h = 0.0; };
+    static constexpr int tableSize = 256;
+    static constexpr double maxControl = 40.0;
+    static constexpr double stepLimit[4] = { 15.0, 60.0, 15.0, 60.0 }, stepTolerance[4] = { 1.0e-2, 2.5e-1, 1.0e-2, 2.5e-1 };
+
+    Core core;
+    Point rest;
+    double T = 1.0 / 48000.0, gL = 0.0, restH = 0.0, restGain = 1.0;
+    double reductionTable[tableSize + 1] {};
     double inScale = 1.0, outScale = 1.0;
     State st[2];
 };

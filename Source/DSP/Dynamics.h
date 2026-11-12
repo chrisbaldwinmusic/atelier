@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Common.h"
+#include "ValveCircuits.h"
 
 namespace atelier
 {
@@ -139,12 +140,15 @@ struct Compressor
         sr = sampleRate;
         dc.setCutoff (sr, 5.0);
         memAtt = msToCoef (600.0f, sr);
+        valves.prepare (sr);
+        valves.setInputScale (4.0);         // a full-scale sample puts 4 V on each grid; see Vari-Mu below
+        voltsPerDb = valves.controlFor (10.0) / 10.0;
         reset();
     }
 
     void reset() noexcept
     {
-        scFilter.reset(); dc.reset();
+        scFilter.reset(); dc.reset(); valves.reset();
         ms = 0.0f; envFast = envSlow = 0.0f; fb[0] = fb[1] = 0.0f;
     }
 
@@ -167,9 +171,11 @@ struct Compressor
                 c2 = 0.035f; c3 = -0.02f;
                 break;
             case variMu:
+                // The gain element is a real pair of remote-cutoff valves (VariMuCircuit). The side chain turns the
+                // gain reduction it wants into a voltage on their grids, a fixed number of volts per dB, and the
+                // valves do the rest: their curve makes the onset gentle and lets the ratio rise as they are pushed.
                 feedback = true;  release = single;
-                a = std::max (1.0f, a) * 2.0f; r *= 1.5f;   knee = 14.0f; rmsMs = 12.0f;
-                c2 = 0.015f; c3gr = -0.12f;
+                a = std::max (1.0f, a) * 2.0f; r *= 1.5f;   knee = 8.0f; rmsMs = 12.0f;
                 break;
             default:
                 feedback = false; release = single;
@@ -181,7 +187,8 @@ struct Compressor
         if (p.external) feedback = false;
 
         if (p.autoRelease && release == single) release = programme;
-        coloured = p.model != vca;
+        coloured = p.model == fet || p.model == opto;
+        valveGain = p.model == variMu;
         knee += p.extraKnee;
         usesRms = rmsMs > 0.0f;
         rmsCoef = usesRms ? msToCoef (rmsMs, sr) : 1.0f;
@@ -263,8 +270,19 @@ struct Compressor
             }
 
             // ---- gain element ----
-            const float g = gr > 1.0e-4f ? dbToGain (-gr) : 1.0f;
-            float wl = inL * g, wr = inR * g;
+            float wl, wr;
+            if (valveGain)
+            {
+                const double control = voltsPerDb * (double) gr;
+                wl = valves.process (0, inL, control);
+                wr = valves.process (1, inR, control);
+                gr = (float) valves.reduction (control);       // what the valves actually take off, for the meter
+            }
+            else
+            {
+                const float g = gr > 1.0e-4f ? dbToGain (-gr) : 1.0f;
+                wl = inL * g; wr = inR * g;
+            }
             fb[0] = wl; fb[1] = wr;
 
             if (coloured)
@@ -289,7 +307,9 @@ struct Compressor
     Biquad scFilter;
     OnePole dc;
     Release release = single;
-    bool useSc = false, usesRms = false, feedback = false, coloured = false;
+    bool useSc = false, usesRms = false, feedback = false, coloured = false, valveGain = false;
+    VariMuCircuit valves;
+    double voltsPerDb = 1.6;
     float thr = -18.0f, slope = 0.75f, knee = 3.0f, makeup = 1.0f, mix = 1.0f;
     float attFast = 0.01f, relFast = 0.001f, attSlow = 0.001f, relSlow = 0.0001f, rmsCoef = 1.0f, memAtt = 0.0001f;
     float c2 = 0.0f, c3 = 0.0f, c2gr = 0.0f, c3gr = 0.0f;

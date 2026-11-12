@@ -1,4 +1,5 @@
 // Offline checks for Atelier: runs audio through the processor and checks the results.
+#include <functional>
 #include "PluginEditor.h"
 #include "PluginProcessor.h"
 
@@ -258,6 +259,53 @@ int main (int argc, char** argv)
             std::cout << "  model " << model << ": -6 dBFS in -> " << out << " dB (ideal 4:1 = -21)" << std::endl;
             check (allFinite (b) && out < -14.0f && out > -24.0f, "model " + juce::String (model) + " compresses plausibly");
         }
+
+        // The Vari-Mu's gain is turned down by valves, so its curve and its colour come from them
+        struct Reading { float out, gr, h2, h3; };
+        auto measure = [&] (int model, float rmsDb, bool bursts = false)
+        {
+            AtelierProcessor p;
+            p.setPlayConfigDetails (2, 2, sr, 512);
+            p.prepareToPlay (sr, 512);
+            setParam (p, "tubeOn", 0.0f);
+            setParam (p, "compOn", 1.0f); setParam (p, "compModel", (float) model);
+            setParam (p, "compThr", bursts ? -30.0f : -26.0f); setParam (p, "compRatio", bursts ? 10.0f : 4.0f);
+            if (bursts) setParam (p, "compAtt", 1.0f);
+            auto b = sine (2, len, sr, 1000.0, rmsDb + 3.0103f);
+            if (bursts)     // 100 ms loud, 100 ms 26 dB quieter: the gain swings hard and fast
+                for (int i = 0; i < len; ++i)
+                    if ((i / (int) (0.1 * sr)) % 2 == 1) { b.setSample (0, i, b.getSample (0, i) * 0.05f); b.setSample (1, i, b.getSample (1, i) * 0.05f); }
+            run (p, b, 512);
+            p.meters.grComp.store (0.0f);
+            const float f = toneDb (b, 24000, sr, 1000.0);
+            Reading r { f - 3.0103f, 0.0f, toneDb (b, 24000, sr, 2000.0) - f, toneDb (b, 24000, sr, 3000.0) - f };
+            if (bursts)
+            {
+                // anything left below 20 Hz is thump from the gain moving
+                double z[4] {}; const double k = 1.0 - std::exp (-2.0 * juce::MathConstants<double>::pi * 20.0 / sr);
+                float lf = 0.0f;
+                for (int i = 0; i < len; ++i)
+                {
+                    double x = b.getSample (0, i);
+                    for (auto& s1 : z) { s1 += k * (x - s1); x = s1; }
+                    if (i >= 24000) lf = std::max (lf, (float) std::abs (x));
+                }
+                r.out = juce::Decibels::gainToDecibels (lf, -200.0f);
+            }
+            return r;
+        };
+        const Reading vcaOnset = measure (0, -28.0f), muOnset = measure (3, -28.0f);
+        const Reading muLight = measure (3, -22.0f), muMid = measure (3, -14.0f), muHigh = measure (3, -10.0f), muTop = measure (3, -2.0f), muTop2 = measure (3, 2.0f);
+        std::cout << "  vari-mu, threshold -26 dB, ratio 4: -28 dB rms in -> " << muOnset.out << " dB (VCA " << vcaOnset.out << "); -22 -> " << muLight.out
+                  << "; -14 -> " << muMid.out << "; -10 -> " << muHigh.out << "; -2 -> " << muTop.out << "; +2 -> " << muTop2.out << std::endl;
+        std::cout << "    harmonics: H3 " << muLight.h3 << " dBc compressing lightly, " << muTop.h3 << " dBc compressing hard" << std::endl;
+        check (muOnset.out < -28.1f && std::abs (vcaOnset.out + 28.0f) < 0.05f, "the vari-mu starts compressing earlier and more gently than the VCA");
+        check (muTop2.out - muTop.out < muHigh.out - muMid.out, "the vari-mu's ratio rises as it is pushed harder");
+        check (muLight.h3 < -70.0f && muTop.h3 > muLight.h3 + 20.0f, "the vari-mu is clean when compressing lightly and its colour grows as it works harder");
+
+        const Reading muBursts = measure (3, -9.0f, true), vcaBursts = measure (0, -9.0f, true);
+        std::cout << "  gain swinging 25 dB in 1 ms: below 20 Hz, vari-mu " << muBursts.out << " dBFS, VCA " << vcaBursts.out << " dBFS" << std::endl;
+        check (muBursts.out < vcaBursts.out + 6.0f && muBursts.out < -50.0f, "the vari-mu's valve pair is balanced: fast gain changes don't thump");
     }
 
     if (want ("Tape hysteresis"))
@@ -796,7 +844,8 @@ int main (int argc, char** argv)
             std::cout << "  " << names[type] << ": 0 VU at 6 dB of drive -> " << gentle[type].fund << " dB, H2 " << gentle[type].h2 << ", H3 " << gentle[type].h3
                       << " dBc;  -6 dBFS at 12 dB -> " << hard[type].fund << " dB, H2 " << hard[type].h2 << ", H3 " << hard[type].h3 << " dBc" << std::endl;
             check (std::abs (gentle[type].fund + 18.0f) < 0.5f, juce::String (names[type]) + " is at unity gain for a 0 VU signal");
-            check (hard[type].fund < -5.0f && hard[type].fund > -16.0f, juce::String (names[type]) + " saturates without gaining level");
+            // 18 dB hotter than the stage is calibrated for, the level must not rise; a saturating valve loses a good deal
+            check (hard[type].fund < -5.0f && hard[type].fund > -20.0f, juce::String (names[type]) + " saturates without gaining level");
 
             AtelierProcessor p;
             p.setPlayConfigDetails (2, 2, sr, 512);
@@ -826,7 +875,9 @@ int main (int argc, char** argv)
         check (gentle[0].h2 > gentle[0].h3 + 10.0f, "the triode's colour is mostly 2nd harmonic");
         // the pair is matched to 5 %, so a trace of 2nd harmonic survives the cancellation, as it does in hardware
         check (gentle[2].h2 < gentle[0].h2 - 10.0f && hard[2].h3 > hard[2].h2 + 10.0f, "the push-pull pair cancels the 2nd harmonic and leaves the 3rd");
-        check (gentle[1].h2 < gentle[0].h2 && hard[1].h3 > hard[0].h3 + 6.0f, "the pentode is cleaner than the triode when driven gently and has more 3rd harmonic when pushed");
+        // "more bite": pushed, the pentode's distortion is far richer in odd harmonics than the triode's
+        check (gentle[1].h2 < gentle[0].h2 - 6.0f && hard[1].h3 - hard[1].h2 > hard[0].h3 - hard[0].h2 + 6.0f,
+               "the pentode is cleaner than the triode when driven gently, and its distortion has more bite when pushed");
     }
 
     if (want ("Valve circuits against ngspice"))
@@ -872,7 +923,7 @@ int main (int argc, char** argv)
             // and the winding is driven by the difference between the two plate currents
             const juce::String pairDeck = half ("HALFA", 1180.0) + half ("HALFB", 1180.0 * atelier::PushPullCircuit::mismatch)
                 + "Vin in 0 SIN(0 AMP 220)\nEinv inb 0 in 0 -1\n"
-                + "CinA in ja 47n\nRglA ja 0 470k\nRgsA ja ga 10k\nCinB inb jb 47n\nRglB jb 0 470k\nRgsB jb gb 10k\n"
+                + "CinA in ja 47n\nRglA ja 0 470k\nRgsA ja ga " + juce::String (atelier::PushPullCircuit::Rgs) + "\nCinB inb jb 47n\nRglB jb 0 470k\nRgsB jb gb " + juce::String (atelier::PushPullCircuit::Rgs) + "\n"
                 + "B1 pax 0 V=250-V(out)\nVs1 pax pa 0\nB2 pbx 0 V=250+V(out)\nVs2 pbx pb 0\n"
                 + "XA pa ga k HALFA\nXB pb gb k HALFB\nRk k 0 820\nCk k 0 100u\n"
                 + "Bw 0 out I=I(Vs1)-I(Vs2)\nRh out 0 5k\nLh out 0 40\n";
@@ -929,6 +980,77 @@ int main (int argc, char** argv)
             against ("triode", triodeDeck, { 0.05, 0.5, 2.0, 8.0 }, atelier::TubeCircuit());
             against ("pentode", pentodeDeck, { 0.01, 0.1, 0.5, 2.0, 8.0 }, atelier::PentodeCircuit());
             against ("push-pull pair", pairDeck, { 0.2, 2.0, 8.0, 20.0, 40.0 }, atelier::PushPullCircuit());
+
+            {
+                // The vari-mu pair at the compressor's own rate, with the side chain's control voltage both held
+                // (ramped up over 10 ms, then steady) and swinging fast, which is when a mismatched pair would thump.
+                using VM = atelier::VariMuCircuit;
+                const double rate = 48000.0;
+                auto remote = [] (const char* name, double strength)
+                {
+                    juce::String d = juce::String (".subckt ") + name + " P G K\n";
+                    for (int k = 0; k < VM::sections; ++k)
+                    {
+                        const double mu = VM::sectionMu[k], kp = mu * 6.0, kg1 = VM::sectionKg1[k] / strength;
+                        const juce::String e = "E" + juce::String (k);
+                        d << "Be" << k << " " << e << " 0 V=V(P,K)/" << juce::String (kp, 6) << "*ln(1+exp(" << juce::String (kp, 6) << "*(1/"
+                          << juce::String (mu, 6) << "+V(G,K)/sqrt(300+V(P,K)*V(P,K)))))\n"
+                          << "Bp" << k << " P K I=V(" << e << ")>0 ? 2*pwr(V(" << e << "),1.4)/" << juce::String (kg1, 6) << " : 0\n";
+                    }
+                    return d + "Bg G K I=V(G,K)>0 ? pwr(V(G,K),1.5)/1300 : 0\n.ends\n";
+                };
+                float worst = -200.0f;
+                struct Case { double amp; juce::String control; std::function<double (double)> at; const char* what; };
+                const auto ramp = [] (double v) { return [v] (double t) { return v * std::min (1.0, t / 0.01); }; };
+                const auto swing = [] (double t) { return t < 0.1 ? 0.0 : t < 0.101 ? 15000.0 * (t - 0.1) : t < 0.25 ? 15.0 : t < 0.251 ? 15.0 - 15000.0 * (t - 0.25) : 0.0; };
+                const Case cases[] = { { 0.1, "PWL(0 0 0.01 20)", ramp (20.0), "20 V on the grids" }, { 2.0, "PWL(0 0 0.01 0)", ramp (0.0), "no control voltage" },
+                                       { 2.0, "PWL(0 0 0.01 8)", ramp (8.0), "8 V on the grids" }, { 0.5, "PWL(0 0 0.1 0 0.101 15 0.25 15 0.251 0)", swing, "control swinging 0 to 15 V in 1 ms" } };
+                for (const auto& c : cases)
+                {
+                    const auto deck = outDir.getChildFile ("valve.cir"), data = outDir.getChildFile ("valve.txt");
+                    data.deleteFile();
+                    deck.replaceWithText ("Vari-mu pair\n" + remote ("VA", 1.0) + remote ("VB", 1.0 / VM::mismatch)
+                        + "Vin in 0 SIN(0 " + juce::String (c.amp) + " 220)\nVc c 0 " + c.control + "\n"
+                        + "BsA sa 0 V=V(in)-V(c)-" + juce::String (VM::restBias) + "\nBsB sb 0 V=-V(in)-V(c)-" + juce::String (VM::restBias) + "\n"
+                        + "RgA sa ga " + juce::String (VM::Rg) + "\nRgB sb gb " + juce::String (VM::Rg) + "\n"
+                        + "B1 pax 0 V=" + juce::String (VM::supply) + "-V(out)\nVs1 pax pa 0\nB2 pbx 0 V=" + juce::String (VM::supply) + "+V(out)\nVs2 pbx pb 0\n"
+                        + "XA pa ga 0 VA\nXB pb gb 0 VB\nBw 0 out I=I(Vs1)-I(Vs2)\nRh out 0 " + juce::String (VM::Rh) + "\nLh out 0 " + juce::String (VM::Lh) + "\n"
+                        // the time step is written in full: rounded to six figures, the two simulations slowly drift apart
+                        + ".options reltol=1e-5\n.control\ntran " + juce::String (1.0 / rate, 15) + " 0.4 0 " + juce::String (0.5 / rate, 15)
+                        + "\nlinearize v(out)\nwrdata valve.txt v(out)\n.endc\n.end\n");
+                    juce::ChildProcess proc;
+                    juce::StringArray cmd { "/bin/sh", "-c", "cd " + outDir.getFullPathName().quoted() + " && SPICE_LIB_DIR="
+                                                                 + ngspice.getParentDirectory().getSiblingFile ("share/ngspice").getFullPathName().quoted()
+                                                                 + " " + ngspice.getFullPathName().quoted() + " -b valve.cir > /dev/null 2>&1" };
+                    std::vector<double> ref;
+                    if (proc.start (cmd) && proc.waitForProcessToFinish (120000))
+                    {
+                        juce::StringArray lines;
+                        lines.addLines (data.loadFileAsString());
+                        for (const auto& line : lines)
+                        {
+                            const auto parts = juce::StringArray::fromTokens (line.trim(), " \t", "");
+                            if (parts.size() >= 2) ref.push_back (parts[parts.size() - 1].getDoubleValue());
+                        }
+                    }
+                    const int n = (int) (0.4 * rate) - 2;
+                    if ((int) ref.size() < n) { check (false, juce::String ("ngspice produced a reference for the vari-mu pair, ") + c.what); continue; }
+
+                    VM v;
+                    v.prepare (rate);
+                    double err = 0.0, sig = 0.0;
+                    for (int i = 0; i < n; ++i)
+                    {
+                        const double t = i / rate;
+                        const double y = v.processVolts (0, c.amp * std::sin (2.0 * juce::MathConstants<double>::pi * 220.0 * t), c.at (t));
+                        if (t >= 0.05) { err += (y - ref[(size_t) i]) * (y - ref[(size_t) i]); sig += ref[(size_t) i] * ref[(size_t) i]; }
+                    }
+                    const float diff = (float) (10.0 * std::log10 (std::max (1.0e-30, err / sig)));
+                    worst = std::max (worst, diff);
+                    std::cout << "  vari-mu pair, " << c.amp << " V, " << c.what << ": difference from ngspice " << diff << " dB" << std::endl;
+                }
+                check (worst < -60.0f, "vari-mu pair matches the ngspice simulation of the same circuit to better than -60 dB");
+            }
         }
 
         // behaviour a static curve cannot have: after a loud burst the bias has shifted and takes time to come back
@@ -1058,6 +1180,19 @@ int main (int argc, char** argv)
             check (percent < 15.0, "CPU use is reasonable");
         }
         // the pentode has a third electrode to solve for and the push-pull pair a second valve, so both cost more than the triode
+        {
+            AtelierProcessor p;
+            p.setPlayConfigDetails (2, 2, sr, 256);
+            p.prepareToPlay (sr, 256);
+            allModulesOn (p);
+            setParam (p, "mode", 1.0f); setParam (p, "compModel", 3.0f);
+            auto b = noise (2, (int) sr * 20, -12.0f, 5);
+            const auto start = juce::Time::getMillisecondCounterHiRes();
+            run (p, b, 256);
+            const double percent = (juce::Time::getMillisecondCounterHiRes() - start) / 200.0;
+            std::cout << "  mode 1 with the Vari-Mu compressor: " << percent << " % of one core at 48 kHz" << std::endl;
+            check (percent < 18.0, "CPU use is reasonable with the Vari-Mu compressor");
+        }
         static const char* valves[] = { "triode", "pentode", "push-pull" };
         for (int valve = 1; valve < 3; ++valve)
         {

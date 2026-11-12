@@ -13,7 +13,7 @@ One strip, three calibrations:
 - **Tube** — a 12AX7 triode stage, an EF86 pentode stage and a 12AU7 push-pull pair, each solved as a real circuit sample by sample and checked against ngspice; Bias sets the cathode resistor (4x oversampled).
 - **Tape** — Jiles-Atherton magnetic hysteresis with pre/de-emphasis, head bump and three speeds (8x oversampled).
 - **Iron** — steel, nickel and console output transformers that saturate on low-frequency flux first.
-- **Compressor** — four designs that differ in topology, not just timing: VCA, FET, Opto and Vari-Mu. External sidechain key, sidechain high-pass, parallel mix.
+- **Compressor** — four designs that differ in topology, not just timing: VCA, FET, Opto and Vari-Mu. The Vari-Mu turns the gain down with a real push-pull pair of remote-cutoff valves, solved as a circuit and checked against ngspice. External sidechain key, sidechain high-pass, parallel mix.
 - **EQ** — five bands, Modern or Vintage curves, mid/side on busses and masters, pre or post compressor.
 - **Gate and de-esser** on channels; **stereo image, look-ahead true-peak limiter with a soft clipper ahead of it, and dither** (24 bit, 16 bit, 16 bit shaped) on busses and masters.
 - **Analyser** — input and output spectra with a draggable EQ curve, integrated loudness, loudness range, true peak and correlation.

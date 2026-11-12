@@ -145,7 +145,7 @@ inline const std::vector<Help> help =
       "Turns loud moments down so the overall level is steadier, then Makeup brings everything back up. Four circuit models with different personalities.",
       "Watch the GR strip, or click the VU to show gain reduction. Decide what you want first: control, punch or glue. That choice picks the model and the timing." },
     { "compModel", "Compressor Model",
-      "VCA: clean, precise and punchy, the classic bus glue. FET: extremely fast and aggressive. Opto: smooth, with a release that slows down the harder it works. Vari-Mu: the gentlest, with a ratio that rises with level.",
+      "VCA: clean, precise and punchy, the classic bus glue. FET: extremely fast and aggressive. Opto: smooth, with a release that slows down the harder it works. Vari-Mu: the gentlest, with a ratio that rises with level. Its gain is turned down by a real pair of remote-cutoff valves, solved as a circuit: the compression eases in, and the harder it works the more the valves colour the sound.",
       "Vocals and bass: Opto. Drums and anything needing attitude: FET. Drum, mix bus and master glue: VCA. Master and vocal bus thickness: Vari-Mu." },
     { "compThr", "Compressor Threshold",
       "The level above which compression begins. Lower it and more of the signal gets compressed.",
@@ -280,7 +280,7 @@ inline const std::vector<Source> mixSources =
         "FET with a 10 to 20 ms attack lets the stick through; release so it recovers before the next backbeat.",
         "Pentode drive adds bark. Push until it bites, then back off a little.",
       },
-      { { "hpf", 90.0f }, { "gateOn", 1.0f }, { "gateThr", -32.0f }, { "gateRange", 18.0f }, { "gateRel", 180.0f }, { "tubeOn", 1.0f }, { "tubeDrive", 8.0f }, { "tubeType", 1.0f }, { "eqOn", 1.0f }, { "lmGain", 3.0f }, { "lmFreq", 200.0f }, { "lmQ", 1.0f }, { "hmGain", 3.0f }, { "hmFreq", 5000.0f }, { "hmQ", 0.8f }, { "hfGain", 2.0f }, { "hfFreq", 9000.0f }, { "compOn", 1.0f }, { "compModel", 1.0f }, { "compThr", -18.0f }, { "compRatio", 4.0f }, { "compAtt", 15.0f }, { "compRel", 100.0f }, { "compMakeup", 2.0f } } },
+      { { "hpf", 90.0f }, { "gateOn", 1.0f }, { "gateThr", -32.0f }, { "gateRange", 18.0f }, { "gateRel", 180.0f }, { "tubeOn", 1.0f }, { "tubeDrive", 10.0f }, { "tubeType", 1.0f }, { "eqOn", 1.0f }, { "lmGain", 3.0f }, { "lmFreq", 200.0f }, { "lmQ", 1.0f }, { "hmGain", 3.0f }, { "hmFreq", 5000.0f }, { "hmQ", 0.8f }, { "hfGain", 2.0f }, { "hfFreq", 9000.0f }, { "compOn", 1.0f }, { "compModel", 1.0f }, { "compThr", -18.0f }, { "compRatio", 4.0f }, { "compAtt", 15.0f }, { "compRel", 100.0f }, { "compMakeup", 2.0f } } },
     { "Toms",
       {
         "Gate them: toms ring along with everything. Use a long release (300 ms or more) so the tail survives.",
@@ -312,7 +312,7 @@ inline const std::vector<Source> mixSources =
         "Darken rather than brighten: a high shelf cut hides the cymbal wash and leaves the drums' body.",
         "Slow tape (7.5 ips) driven hard adds the smeared, larger-than-life quality.",
       },
-      { { "hpf", 60.0f }, { "tubeOn", 1.0f }, { "tubeDrive", 8.0f }, { "tubeType", 1.0f }, { "eqOn", 1.0f }, { "lmGain", -3.0f }, { "lmFreq", 400.0f }, { "hfGain", -2.0f }, { "hfFreq", 8000.0f }, { "compOn", 1.0f }, { "compModel", 1.0f }, { "compThr", -24.0f }, { "compRatio", 8.0f }, { "compAtt", 10.0f }, { "compRel", 60.0f }, { "compMakeup", 4.0f }, { "compMix", 60.0f }, { "tapeOn", 1.0f }, { "tapeDrive", 6.0f }, { "tapeSpeed", 0.0f } } },
+      { { "hpf", 60.0f }, { "tubeOn", 1.0f }, { "tubeDrive", 10.0f }, { "tubeType", 1.0f }, { "eqOn", 1.0f }, { "lmGain", -3.0f }, { "lmFreq", 400.0f }, { "hfGain", -2.0f }, { "hfFreq", 8000.0f }, { "compOn", 1.0f }, { "compModel", 1.0f }, { "compThr", -24.0f }, { "compRatio", 8.0f }, { "compAtt", 10.0f }, { "compRel", 60.0f }, { "compMakeup", 4.0f }, { "compMix", 60.0f }, { "tapeOn", 1.0f }, { "tapeDrive", 6.0f }, { "tapeSpeed", 0.0f } } },
     { "Bass",
       {
         "Consistency is everything: Opto compression at 4 to 6 dB keeps every note at the same weight.",
@@ -368,7 +368,7 @@ inline const std::vector<Source> mixSources =
         "Tube and iron make sterile soft-synths feel like hardware.",
         "For pads, cut 200 to 400 Hz to stop them clouding the vocal and guitars.",
       },
-      { { "hpf", 40.0f }, { "lpf", 16000.0f }, { "tubeOn", 1.0f }, { "tubeDrive", 6.0f }, { "tubeType", 2.0f }, { "eqOn", 1.0f }, { "lmGain", -2.0f }, { "lmFreq", 300.0f }, { "ironOn", 1.0f }, { "ironDrive", 4.0f }, { "ironType", 1.0f } } },
+      { { "hpf", 40.0f }, { "lpf", 16000.0f }, { "tubeOn", 1.0f }, { "tubeDrive", 4.0f }, { "tubeType", 2.0f }, { "eqOn", 1.0f }, { "lmGain", -2.0f }, { "lmFreq", 300.0f }, { "ironOn", 1.0f }, { "ironDrive", 4.0f }, { "ironType", 1.0f } } },
     { "Strings",
       {
         "Harshness lives at 2 to 4 kHz. A broad cut there is kinder than a low-pass.",
@@ -384,7 +384,7 @@ inline const std::vector<Source> mixSources =
         "Body sits at 200 to 400 Hz: cut it for a tight section, keep it for a solo instrument.",
         "Tape softens the edge of close-miked horns the way a ribbon microphone would.",
       },
-      { { "hpf", 80.0f }, { "tubeOn", 1.0f }, { "tubeDrive", 4.0f }, { "tubeType", 2.0f }, { "eqOn", 1.0f }, { "lmGain", -2.0f }, { "lmFreq", 400.0f }, { "hmGain", -2.0f }, { "hmFreq", 3000.0f }, { "hmQ", 0.7f }, { "hfGain", 1.0f }, { "hfFreq", 9000.0f }, { "compOn", 1.0f }, { "compModel", 3.0f }, { "compThr", -18.0f }, { "compRatio", 2.5f }, { "compAtt", 25.0f }, { "compRel", 200.0f }, { "compMakeup", 1.0f }, { "tapeOn", 1.0f }, { "tapeDrive", 4.0f }, { "tapeSpeed", 1.0f } } },
+      { { "hpf", 80.0f }, { "tubeOn", 1.0f }, { "tubeDrive", 2.5f }, { "tubeType", 2.0f }, { "eqOn", 1.0f }, { "lmGain", -2.0f }, { "lmFreq", 400.0f }, { "hmGain", -2.0f }, { "hmFreq", 3000.0f }, { "hmQ", 0.7f }, { "hfGain", 1.0f }, { "hfFreq", 9000.0f }, { "compOn", 1.0f }, { "compModel", 3.0f }, { "compThr", -18.0f }, { "compRatio", 2.5f }, { "compAtt", 25.0f }, { "compRel", 200.0f }, { "compMakeup", 1.0f }, { "tapeOn", 1.0f }, { "tapeDrive", 4.0f }, { "tapeSpeed", 1.0f } } },
 };
 
 inline const std::vector<Source> busSources =
@@ -396,7 +396,7 @@ inline const std::vector<Source> busSources =
         "Sidechain high-pass near 80 Hz stops the kick from pumping the cymbals.",
         "Tape at 15 ips plus Steel iron is the classic 'drums through a console to tape' sound.",
       },
-      { { "tubeOn", 1.0f }, { "tubeDrive", 4.0f }, { "tubeType", 1.0f }, { "eqOn", 1.0f }, { "lfGain", 1.5f }, { "lfFreq", 70.0f }, { "hfGain", 1.5f }, { "hfFreq", 9000.0f }, { "compOn", 1.0f }, { "compModel", 0.0f }, { "compThr", -22.0f }, { "compRatio", 4.0f }, { "compAtt", 30.0f }, { "compRel", 100.0f }, { "compAuto", 1.0f }, { "compMix", 70.0f }, { "compSc", 80.0f }, { "compMakeup", 2.0f }, { "tapeOn", 1.0f }, { "tapeDrive", 6.0f }, { "tapeSpeed", 1.0f }, { "ironOn", 1.0f }, { "ironDrive", 5.0f }, { "ironType", 0.0f } } },
+      { { "tubeOn", 1.0f }, { "tubeDrive", 1.0f }, { "tubeType", 1.0f }, { "eqOn", 1.0f }, { "lfGain", 1.5f }, { "lfFreq", 70.0f }, { "hfGain", 1.5f }, { "hfFreq", 9000.0f }, { "compOn", 1.0f }, { "compModel", 0.0f }, { "compThr", -22.0f }, { "compRatio", 4.0f }, { "compAtt", 30.0f }, { "compRel", 100.0f }, { "compAuto", 1.0f }, { "compMix", 70.0f }, { "compSc", 80.0f }, { "compMakeup", 2.0f }, { "tapeOn", 1.0f }, { "tapeDrive", 6.0f }, { "tapeSpeed", 1.0f }, { "ironOn", 1.0f }, { "ironDrive", 5.0f }, { "ironType", 0.0f } } },
     { "Drum Crush (parallel)",
       {
         "Deliberately too much: FET at a high ratio, 10 dB or more of reduction, then Mix pulled back so the dry kit leads.",
@@ -480,7 +480,7 @@ inline const std::vector<Source> masterSources =
         "Vari-Mu at 1.5:1 for 1 dB or so of movement; the limiter should catch only stray peaks (1 to 3 dB).",
         "Mono the bass below 80 Hz for solid translation to phones, cars and clubs.",
       },
-      { { "hpf", 25.0f }, { "tubeOn", 1.0f }, { "tubeDrive", 2.0f }, { "tubeType", 2.0f }, { "eqOn", 1.0f }, { "airGain", 1.0f }, { "compOn", 1.0f }, { "compModel", 3.0f }, { "compThr", -20.0f }, { "compRatio", 1.5f }, { "compAtt", 30.0f }, { "compRel", 250.0f }, { "compAuto", 1.0f }, { "compSc", 60.0f }, { "tapeOn", 1.0f }, { "tapeDrive", 2.0f }, { "tapeSpeed", 2.0f }, { "imgOn", 1.0f }, { "width", 100.0f }, { "monoBass", 80.0f }, { "limOn", 1.0f }, { "limDrive", 3.0f }, { "limCeil", -1.0f }, { "limRel", 150.0f } } },
+      { { "hpf", 25.0f }, { "tubeOn", 1.0f }, { "tubeDrive", 3.5f }, { "tubeType", 2.0f }, { "eqOn", 1.0f }, { "airGain", 1.0f }, { "compOn", 1.0f }, { "compModel", 3.0f }, { "compThr", -20.0f }, { "compRatio", 1.5f }, { "compAtt", 30.0f }, { "compRel", 250.0f }, { "compAuto", 1.0f }, { "compSc", 60.0f }, { "tapeOn", 1.0f }, { "tapeDrive", 2.0f }, { "tapeSpeed", 2.0f }, { "imgOn", 1.0f }, { "width", 100.0f }, { "monoBass", 80.0f }, { "limOn", 1.0f }, { "limDrive", 3.0f }, { "limCeil", -1.0f }, { "limRel", 150.0f } } },
     { "Loud / Club Master",
       {
         "Loudness comes from density in the mix, not from the limiter alone. Compress in stages.",
@@ -488,7 +488,7 @@ inline const std::vector<Source> masterSources =
         "Mono below 120 Hz: club systems sum the subs, and wide bass simply disappears.",
         "Clip takes the drum peaks so the limiter works less. Past 5 to 6 dB of limiting the kick still shrinks; compare at matched loudness.",
       },
-      { { "hpf", 25.0f }, { "tubeOn", 1.0f }, { "tubeDrive", 3.0f }, { "tubeType", 2.0f }, { "eqOn", 1.0f }, { "lfGain", 1.0f }, { "lfFreq", 50.0f }, { "airGain", 1.0f }, { "compOn", 1.0f }, { "compModel", 0.0f }, { "compThr", -20.0f }, { "compRatio", 2.0f }, { "compAtt", 30.0f }, { "compRel", 100.0f }, { "compSc", 90.0f }, { "compMakeup", 1.0f }, { "ironOn", 1.0f }, { "ironDrive", 3.0f }, { "ironType", 0.0f }, { "imgOn", 1.0f }, { "width", 105.0f }, { "monoBass", 120.0f }, { "limOn", 1.0f }, { "limDrive", 7.0f }, { "limCeil", -0.3f }, { "limRel", 80.0f }, { "limClip", 40.0f } } },
+      { { "hpf", 25.0f }, { "tubeOn", 1.0f }, { "tubeDrive", 4.0f }, { "tubeType", 2.0f }, { "eqOn", 1.0f }, { "lfGain", 1.0f }, { "lfFreq", 50.0f }, { "airGain", 1.0f }, { "compOn", 1.0f }, { "compModel", 0.0f }, { "compThr", -20.0f }, { "compRatio", 2.0f }, { "compAtt", 30.0f }, { "compRel", 100.0f }, { "compSc", 90.0f }, { "compMakeup", 1.0f }, { "ironOn", 1.0f }, { "ironDrive", 3.0f }, { "ironType", 0.0f }, { "imgOn", 1.0f }, { "width", 105.0f }, { "monoBass", 120.0f }, { "limOn", 1.0f }, { "limDrive", 7.0f }, { "limCeil", -0.3f }, { "limRel", 80.0f }, { "limClip", 40.0f } } },
     { "Dynamic / Acoustic Master",
       {
         "Protect the dynamics; they are the point of this music. Compression is optional.",
@@ -496,7 +496,7 @@ inline const std::vector<Source> masterSources =
         "Nickel iron and 30 ips tape add polish without audible colour.",
         "Tiny broad EQ moves only (0.5 to 1 dB). Vintage style keeps them gentle.",
       },
-      { { "tubeOn", 1.0f }, { "tubeDrive", 1.5f }, { "tubeType", 2.0f }, { "eqOn", 1.0f }, { "eqStyle", 1.0f }, { "airGain", 1.0f }, { "tapeOn", 1.0f }, { "tapeDrive", 2.0f }, { "tapeSpeed", 2.0f }, { "ironOn", 1.0f }, { "ironDrive", 2.0f }, { "ironType", 1.0f }, { "limOn", 1.0f }, { "limDrive", 1.0f }, { "limCeil", -1.0f }, { "limRel", 200.0f } } },
+      { { "tubeOn", 1.0f }, { "tubeDrive", 3.0f }, { "tubeType", 2.0f }, { "eqOn", 1.0f }, { "eqStyle", 1.0f }, { "airGain", 1.0f }, { "tapeOn", 1.0f }, { "tapeDrive", 2.0f }, { "tapeSpeed", 2.0f }, { "ironOn", 1.0f }, { "ironDrive", 2.0f }, { "ironType", 1.0f }, { "limOn", 1.0f }, { "limDrive", 1.0f }, { "limCeil", -1.0f }, { "limRel", 200.0f } } },
     { "Warm / Vintage Master",
       {
         "Colour in layers: a little triode, 15 ips tape and Steel iron each add a different kind of thickness.",

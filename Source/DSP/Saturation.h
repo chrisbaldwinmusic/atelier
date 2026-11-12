@@ -27,14 +27,15 @@ struct TubeStage
         drive = dbToGain (driveDb) * headroom;
 
         // Bias sweeps the cathode resistor over a decade, hot to cold, with the textbook value a little below half way.
-        // The input scale is the voltage a full-scale sample puts on the grid at 0 dB of drive, chosen so that a
-        // 0 VU signal sits where each stage is just colouring.
+        // The input scale is the voltage a full-scale sample puts on the grid at 0 dB of drive. Each is fitted so that
+        // Drive gives the amount of colour the Guide's tips and starting points describe: at the level they are
+        // written for, a few dB thickens, 12 dB or more is audible grit.
         const double decade = std::pow (10.0, (double) std::clamp (bias01, 0.0f, 1.0f));
         switch (type)
         {
-            case pentode:   pent.setCathodeResistor (1000.0 * decade);  pent.setInputScale (0.06 * (double) drive);  break;
-            case pushPull:  pair.setCathodeResistor (330.0 * decade);   pair.setInputScale (6.0 * (double) drive);   break;
-            default:        tri.setCathodeResistor (600.0 * decade);    tri.setInputScale (0.2 * (double) drive);    break;
+            case pentode:   pent.setCathodeResistor (1000.0 * decade);  pent.setInputScale (0.184 * (double) drive);  break;
+            case pushPull:  pair.setCathodeResistor (330.0 * decade);   pair.setInputScale (23.2 * (double) drive);   break;
+            default:        tri.setCathodeResistor (600.0 * decade);    tri.setInputScale (1.34 * (double) drive);    break;
         }
     }
 
