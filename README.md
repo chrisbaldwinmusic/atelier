@@ -1,3 +1,5 @@
+> **This repository has moved.** Atelier is now developed in the Channel Audio monorepo, [chrisbaldwinmusic/channelaudio](https://github.com/chrisbaldwinmusic/channelaudio), in the `Atelier/` folder, with its full history. This repository is archived and kept for reference only.
+
 # Atelier
 
 A boutique channel strip plugin for mixing, bussing and mastering. AU, VST3 and Standalone, built with JUCE.
